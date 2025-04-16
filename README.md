@@ -1,0 +1,1 @@
+# aws-cspm-registration-multi-cid
