@@ -32,7 +32,9 @@ def get_stacksets():
             stackset_name = i['StackSetName']
             if 'CrowdStrike-Cloud-Security-Stackset-' in stackset_name:
                 stackset_names.append(stackset_name)
-        return stackset_names
+            if 'CrowdStrike-Cloud-Security-EB-Stackset-' in stackset_name:
+                eb_stackset_names.append(stackset_name)
+        return stackset_names, eb_stackset_names
     except ClientError as error:
         raise error
 
@@ -126,11 +128,36 @@ def update_stacksets(stackset_name):
     except ClientError as error:
         raise error
 
+def update_eb_stacksets(stackset_name):
+    try:
+        client = boto3.client('cloudformation')
+        response = client.update_stack_set(
+            StackSetName=stackset_name,
+            TemplateURL='https://cs-prod-cloudconnect-templates.s3.amazonaws.com/aws_cspm_cloudformation_eb_gov_comm_v2.json',
+            Capabilities=[
+                'CAPABILITY_NAMED_IAM',
+            ],
+            AdministrationRoleARN=ADMIN_ROLE_ARN,
+            ExecutionRoleName=EXEC_ROLE_NAME,
+            Parameters=[
+                {
+                    'ParameterKey': 'DefaultEventBusRegion',
+                    'UsePreviousValue': False
+                }
+            ],
+        )
+        print(response)
+    except ClientError as error:
+        raise error
+    
 def lambda_handler(event, context):
     """Main Function"""
     logger.info('Got event %s', event)
     logger.info('Context %s', context)
-    stackset_names = get_stacksets()
+    stackset_names, eb_stackset_names = get_stacksets()
     print(stackset_names)
+    print(eb_stackset_names)
     for stackset_name in stackset_names:
         update_stacksets(stackset_name)
+    for eb_stackset_name in eb_stackset_names:
+        update_eb_stacksets(eb_stackset_name)
