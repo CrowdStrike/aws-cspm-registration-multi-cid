@@ -142,7 +142,7 @@ def update_eb_stacksets(stackset_name):
             Parameters=[
                 {
                     'ParameterKey': 'DefaultEventBusRegion',
-                    'UsePreviousValue': False
+                    'UsePreviousValue': True
                 }
             ],
         )
