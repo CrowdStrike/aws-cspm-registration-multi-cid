@@ -151,8 +151,7 @@ def update_eb_stacksets(stackset_name):
             Parameters=[
                 {
                     'ParameterKey': 'DefaultEventBusRegion',
-                    'ParameterValue': AWS_REGION,
-                    'UsePreviousValue': False
+                    'UsePreviousValue': True
                 }
             ],
             Tags=stack_tags
