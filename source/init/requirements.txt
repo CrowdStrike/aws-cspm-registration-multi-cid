@@ -1,0 +1,9 @@
+# CrowdStrike falconpy
+crowdstrike-falconpy>=1.4.4
+
+# HTTP library - pin to avoid conflicts
+urllib3>=1.26.0,<2.0.0
+requests>=2.32.0
+
+# Additional type checking support
+typing-extensions>=4.0.0

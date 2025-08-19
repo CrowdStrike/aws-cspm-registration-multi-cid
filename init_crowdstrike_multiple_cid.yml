@@ -20,7 +20,6 @@ Metadata:
       - Label: 
           default: CSPM Configuration
         Parameters:
-          - CSPMTemplateURL
           - EnableIOA
           - EnableIDP
           - UseExistingCloudTrail
@@ -150,10 +149,6 @@ Parameters:
     Type: String
     Description: List of regions to enable IOA (No Spaces).
     Default: ''
-  CSPMTemplateURL:
-    Type: String
-    Description: S3 URL for CSPM Onboarding Template (Commercial Only)
-    Default: 'https://cs-prod-cloudconnect-templates.s3-us-west-1.amazonaws.com/aws_cspm_cloudformation_lambda_v2.json'
 
 Resources:
   # IAM Role to allow StackSet Administration
@@ -224,8 +219,12 @@ Resources:
                 - iam:DeletePolicy
                 - iam:PutRolePolicy
                 - iam:DeleteRolePolicy
-                - iam:AttachRolePolicy
                 - iam:DetachRolePolicy
+                - iam:AttachRolePolicy
+                - iam:UntagPolicy
+                - iam:UntagRole
+                - iam:TagRole
+                - iam:TagPolicy
                 Resource: '*'
                 Effect: Allow
               - Action:
@@ -237,6 +236,8 @@ Resources:
                 - lambda:RemovePermission
                 - lambda:InvokeFunction
                 - lambda:GetFunction
+                - lambda:TagResource
+                - lambda:UntagResource
                 Resource: '*'
                 Effect: Allow
               - Action:
@@ -244,6 +245,10 @@ Resources:
                 - logs:DeleteLogGroup
                 - logs:PutRetentionPolicy
                 - logs:DeleteRetentionPolicy
+                - logs:TagResource
+                - logs:TagLogGroup
+                - logs:UntagLogGroup
+                - logs:UntagResource
                 Resource: '*'
                 Effect: Allow
               - Action:
@@ -254,6 +259,10 @@ Resources:
                 - s3:DeleteBucket
                 - s3:PutBucketPolicy
                 - s3:DeleteBucketPolicy
+                - s3:PutObjectTagging
+                - s3:PutBucketTagging
+                - s3:TagResource
+                - s3:UntagResource
                 Resource: '*'
                 Effect: Allow
 
@@ -321,6 +330,7 @@ Resources:
                 - iam:PassRole
                 - cloudformation:CreateStackInstances
                 - cloudformation:CreateStackSet
+                - cloudformation:TagResource
                 - cloudformation:UpdateStackInstances
                 - cloudformation:UpdateStackSet
                 - cloudformation:ListStackSets
@@ -334,9 +344,10 @@ Resources:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSOrganizationsReadOnlyAccess'
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonS3ReadOnlyAccess'
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ReadOnlyAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCloudFormationReadOnlyAccess'
 
-  # Lambda Function to register and onboard existing accounts
-  RegisterExistingAccountsLambda:
+  # Lambda Function to register and onboard accounts
+  RegisterAccountsLambda:
     Type: AWS::Lambda::Function
     DependsOn:
       - CrowdStrikeSecretA
@@ -358,49 +369,17 @@ Resources:
           accounts: 'auto'
           secret: 'auto'
           secret_list: !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
-          cspm_template_url: !Ref CSPMTemplateURL
+          parent_stack: !Ref AWS::StackName
           identity_protection: !Ref EnableIDP
       Handler: lambda_function.lambda_handler
       MemorySize: 128
       Role: !GetAtt "LambdaCrowdStrikeRegistrationRole.Arn"
       Runtime: python3.11
       Timeout: 900
-      FunctionName: crowdstrike-cloud-initial-registration
+      FunctionName: crowdstrike-multi-cid-registration
       Code:
         S3Bucket: !Ref S3Bucket
         S3Key: init_lambda_function.zip
-  
-  RegisterNewAccountsLambda:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - CrowdStrikeSecretA
-      - CrowdStrikeSecretB
-      - StackSetRoleSetup
-    Properties:
-      Environment:
-        Variables:
-          existing_cloudtrail: !Ref UseExistingCloudTrail
-          sensor_management: !Ref EnableSensorManagement
-          credentials_storage: !Ref APICredentialsStorageMode
-          aws_account_type: !Ref AWSAccountType
-          current_region: !Ref AWS::Region
-          admin_role: !GetAtt StackSetAdministrationRole.Arn
-          exec_role: !Ref StackSetExecRole
-          enable_ioa: !Ref EnableIOA
-          s3_bucket: !Ref S3Bucket
-          regions: !Ref Regions
-          secret_list: !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
-          cspm_template_url: !Ref CSPMTemplateURL
-          identity_protection: !Ref EnableIDP
-      Handler: lambda_function.lambda_handler
-      MemorySize: 128
-      Role: !GetAtt "LambdaCrowdStrikeRegistrationRole.Arn"
-      Runtime: python3.11
-      Timeout: 900
-      FunctionName: crowdstrike-cloud-new-registration
-      Code:
-        S3Bucket: !Ref S3Bucket
-        S3Key: new_accounts_lambda_function.zip
 
   UpdateStackSetsLambda:
     Type: AWS::Lambda::Function
@@ -409,27 +388,27 @@ Resources:
     Properties:
       Environment:
         Variables:
-          cspm_template_url: !Ref CSPMTemplateURL
           admin_role_arn: !GetAtt StackSetAdministrationRole.Arn
           exec_role_arn: !Ref StackSetExecRole
+          parent_stack: !Ref AWS::StackName
       Handler: lambda_function.lambda_handler
       MemorySize: 128
       Role: !GetAtt "LambdaCrowdStrikeRegistrationRole.Arn"
       Runtime: python3.11
       Timeout: 900
-      FunctionName: crowdstrike-cloud-update-stacksets
+      FunctionName: crowdstrike-multi-cid-update-stacksets
       Code:
         S3Bucket: !Ref S3Bucket
-        S3Key: update_stacksets_lambda_function.zip
+        S3Key: update_lambda_function.zip
 
   # Trigger Lambda Function
-  # TriggerRegisterExistingAccountsLambda:
+  # TriggerRegisterAccountsLambda:
   #   Type: 'Custom::TriggerLambda'
   #   DependsOn:
-  #     - RegisterExistingAccountsLambda
+  #     - RegisterAccountsLambda
   #   Properties:
   #     ServiceToken: !GetAtt
-  #       - RegisterExistingAccountsLambda
+  #       - RegisterAccountsLambda
   #       - Arn
 
   # Create Secrets for registration lambda
@@ -491,13 +470,13 @@ Resources:
       State: ENABLED
       Targets: 
         - Id: trigger-multi-cid-lambda
-          Arn: !GetAtt RegisterNewAccountsLambda.Arn
+          Arn: !GetAtt RegisterAccountsLambda.Arn
 
   InvokeLambdaPermission: 
     Type: AWS::Lambda::Permission
-    DependsOn: RegisterNewAccountsLambda
+    DependsOn: RegisterAccountsLambda
     Properties: 
-      FunctionName: !Ref RegisterNewAccountsLambda
+      FunctionName: !Ref RegisterAccountsLambda
       Action: "lambda:InvokeFunction"
       Principal: "events.amazonaws.com"
       SourceArn: !GetAtt CreateAccountRule.Arn
