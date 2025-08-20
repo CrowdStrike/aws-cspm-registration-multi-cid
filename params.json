@@ -1,0 +1,107 @@
+[
+  {
+    "ParameterKey": "StackSetAdminRole",
+    "ParameterValue": "CrowdStrikeStackSetAdministrationRole",
+    "_comment": "Administration Role for CrowdStrike Root EB StackSet"
+  },
+  {
+    "ParameterKey": "StackSetExecRole", 
+    "ParameterValue": "CrowdStrikeStackSetExecutionRole",
+    "_comment": "Execution Role for CrowdStrike Root EB StackSet"
+  },
+  {
+    "ParameterKey": "RootOU",
+    "ParameterValue": "r-a1b2c3d4e5",
+    "_comment": "REQUIRED: Root OU (e.g. r-****) to provision StackSet Roles against each account"
+  },
+  {
+    "ParameterKey": "OUA",
+    "ParameterValue": "ou-root-a1b2c3d4e5,ou-prod-f6g7h8i9j0",
+    "_comment": "REQUIRED: Comma-separated list of OUs for FalconClientIdA & FalconSecretA"
+  },
+  {
+    "ParameterKey": "CIDA",
+    "ParameterValue": "1234567890ABCDEF1234567890ABCDEF-12",
+    "_comment": "REQUIRED: Falcon CID for OUA, FalconClientIdA & FalconSecretA"
+  },
+  {
+    "ParameterKey": "FalconClientIdA",
+    "ParameterValue": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+    "_comment": "REQUIRED: CrowdStrike Falcon OAuth2 Client ID for OUA (32 character hex string)"
+  },
+  {
+    "ParameterKey": "FalconSecretA",
+    "ParameterValue": "A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W3X4Y5Z6",
+    "_comment": "REQUIRED: CrowdStrike Falcon OAuth2 API Secret for OUA (40+ character string)"
+  },
+  {
+    "ParameterKey": "FalconCloudA",
+    "ParameterValue": "us1",
+    "_comment": "CrowdStrike Falcon Cloud for OUA. Options: us1, us2, eu1, usgov1, usgov2"
+  },
+  {
+    "ParameterKey": "OUB",
+    "ParameterValue": "ou-test-k1l2m3n4o5,ou-dev-p6q7r8s9t0",
+    "_comment": "OPTIONAL: Comma-separated list of OUs for FalconClientIdB & FalconSecretB. Leave empty if only using one CID"
+  },
+  {
+    "ParameterKey": "CIDB",
+    "ParameterValue": "ABCDEF1234567890ABCDEF1234567890-AB",
+    "_comment": "OPTIONAL: Falcon CID for OUB, FalconClientIdB & FalconSecretB. Leave empty if only using one CID"
+  },
+  {
+    "ParameterKey": "FalconClientIdB",
+    "ParameterValue": "z9y8x7w6v5u4t3s2r1q0p9o8n7m6l5k4",
+    "_comment": "OPTIONAL: CrowdStrike Falcon OAuth2 Client ID for OUB. Leave empty if only using one CID"
+  },
+  {
+    "ParameterKey": "FalconSecretB",
+    "ParameterValue": "Z9Y8X7W6V5U4T3S2R1Q0P9O8N7M6L5K4J3I2H1G0F9E8D7C6B5A4",
+    "_comment": "OPTIONAL: CrowdStrike Falcon OAuth2 API Secret for OUB. Leave empty if only using one CID"
+  },
+  {
+    "ParameterKey": "FalconCloudB",
+    "ParameterValue": "us2",
+    "_comment": "CrowdStrike Falcon Cloud for OUB. Options: us1, us2, eu1, usgov1, usgov2"
+  },
+  {
+    "ParameterKey": "UseExistingCloudTrail",
+    "ParameterValue": "True",
+    "_comment": "Choose False to Create CloudTrail for Read-Only Indicators of Attack. Options: True, False"
+  },
+  {
+    "ParameterKey": "EnableIDP",
+    "ParameterValue": "True",
+    "_comment": "Enable Identity Protection. Options: True, False"
+  },
+  {
+    "ParameterKey": "EnableIOA",
+    "ParameterValue": "True",
+    "_comment": "Choose True to enable Indicators of Attack. Options: True, False"
+  },
+  {
+    "ParameterKey": "EnableSensorManagement",
+    "ParameterValue": "False",
+    "_comment": "Enable Sensor Management. Options: True, False"
+  },
+  {
+    "ParameterKey": "AWSAccountType",
+    "ParameterValue": "commercial",
+    "_comment": "AWS Account Type. Options: commercial, govcloud"
+  },
+  {
+    "ParameterKey": "APICredentialsStorageMode",
+    "ParameterValue": "secret",
+    "_comment": "How Falcon API credentials are stored. Options: lambda (environment variables), secret (AWS Secrets Manager)"
+  },
+  {
+    "ParameterKey": "Regions",
+    "ParameterValue": "us-east-1,us-west-2,eu-west-1",
+    "_comment": "Only required if connecting Commercial AWS to GovCloud Falcon.  Comma-separated list of regions to enable IOA (No Spaces). Example: us-east-1,us-west-2,eu-west-1"
+  },
+  {
+    "ParameterKey": "CSPMTemplateURL",
+    "ParameterValue": "https://cs-prod-cloudconnect-templates.s3-us-west-1.amazonaws.com/aws_cspm_cloudformation_lambda_v2.json",
+    "_comment": "S3 URL for CSPM Onboarding Template (Commercial Only)"
+  }
+]
