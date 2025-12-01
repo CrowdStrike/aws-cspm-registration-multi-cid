@@ -25,6 +25,7 @@ Metadata:
           - UseExistingCloudTrail
           - EnableSensorManagement
           - APICredentialsStorageMode
+          - NestedOUs
           - Regions
       - Label: 
           default: Misc
@@ -141,6 +142,13 @@ Parameters:
     Description: How Falcon API credentials are stored. 'lambda' stores them in the lambda environment variables, 'secret' in an AWS secret
     Default: secret
     AllowedValues: ["lambda", "secret"]
+  NestedOUs:
+    Type: String
+    Description: Choose True to register accounts in nested OUs under the provided OUs. Choose False to only register direct children of provided OUs.
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Default: 'True'
   RootOU:
     Type: String
     Description: Please enter the Root OU (eg. r-****) to provision StackSet Roles against each account.
@@ -371,6 +379,7 @@ Resources:
           secret_list: !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
           parent_stack: !Ref AWS::StackName
           identity_protection: !Ref EnableIDP
+          nested_ous: !Ref NestedOUs
       Handler: lambda_function.lambda_handler
       MemorySize: 128
       Role: !GetAtt "LambdaCrowdStrikeRegistrationRole.Arn"
