@@ -382,7 +382,6 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn:
       - CrowdStrikeSecretA
-      - CrowdStrikeSecretB
       - StackSetRoleSetup
     Properties:
       Environment:
@@ -399,7 +398,10 @@ Resources:
           regions: !Ref Regions
           accounts: 'auto'
           secret: 'auto'
-          secret_list: !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
+          secret_list: !If
+            - HasOUB
+            - !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
+            - !Ref CrowdStrikeSecretA
           parent_stack: !Ref AWS::StackName
           identity_protection: !Ref EnableIDP
           nested_ous: !Ref NestedOUs
@@ -464,6 +466,7 @@ Resources:
             - Ref: CIDA
             - '"}'
   CrowdStrikeSecretB:
+    Condition: HasOUB
     Type: AWS::SecretsManager::Secret
     Properties:
       Description: CrowdStrike Credentials
