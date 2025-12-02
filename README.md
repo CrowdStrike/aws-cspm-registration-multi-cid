@@ -90,12 +90,43 @@ This will execute the Lambda to retrieve your API Credentials from Secrets Manag
 1. Each account will have a correspondiong stackset named CrowdStrike-Cloud-Security-Stackset-{accountID}.  You can open these stacksets and review the status of stack instances to confirm the account has been onboarded.
 2. Each account will appear in Falcon>Cloud Security>Cloud Accounts Registration.  Be sure to refresh the list to get the most up-to-date status of each account.
 
+## Nested OU Support
+This solution supports both nested and non-nested OU account discovery:
+
+### Nested OUs (Default Behavior - NestedOUs=True)
+When `NestedOUs` is set to `True` (default), the solution will discover and register accounts in all nested OUs under the specified parent OUs.
+
+**Example:**
+```
+Root OU (r-123456)
+├── Production OU (ou-prod-abc) ← You specify this in OUA  
+│   ├── Account A ← ✅ Registered to CIDA
+│   ├── Account B ← ✅ Registered to CIDA
+│   └── Finance OU (ou-sec-123)
+│       ├── Account C ← ✅ Registered to CIDA (nested)
+│       └── Account D ← ✅ Registered to CIDA (nested)
+```
+
+### Direct Children Only (NestedOUs=False)
+When `NestedOUs` is set to `False`, only accounts that are direct children of the specified OUs will be registered.
+
+**Example:**
+```
+Root OU (r-123456)
+├── Production OU (ou-prod-abc) ← You specify this in OUA
+│   ├── Account A ← ✅ Registered to CIDA (direct child)
+│   ├── Account B ← ✅ Registered to CIDA (direct child) 
+│   └── Finance OU (ou-sec-123)
+│       ├── Account C ← ❌ Not registered (nested)
+│       └── Account D ← ❌ Not registered (nested)
+```
+
 ## How New Accounts are Registered
 The solution supports automatic account registration in two scenarios:
 1. **Account Creation**: When a new AWS Account is created within the Organization, and moved into an OU (MoveAccount event), EventBridge will trigger the crowdstrike-cloud-registration function.
 2. **Account Movement**: When an existing AWS Account is moved to a different OU (MoveAccount event), the function will automatically detect this and re-register the account with the appropriate CID.
 
-In both cases, the Lambda function will retrieve your API Credentials from Secrets Manager and register the account to the CID mapped to its Parent OU. Upon successful registration, Lambda will trigger the StackSets required to onboard the Account.
+In both cases, the Lambda function will retrieve your API Credentials from Secrets Manager and register the account to the CID mapped to its Parent OU (respecting the NestedOUs setting). Upon successful registration, Lambda will trigger the StackSets required to onboard the Account.
 
 ### Troubleshooting
 If an account either does not appear in Falcon or shows as inactive more than an hour after registration, review the logs for each Lambda function in cloudwatch logs and review the StackSet for that account to ensure no errors occured during stack deployment.

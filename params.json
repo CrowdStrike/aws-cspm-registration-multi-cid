@@ -11,8 +11,13 @@
   },
   {
     "ParameterKey": "RootOU",
-    "ParameterValue": "r-a1b2c3d4e5",
-    "_comment": "REQUIRED: Root OU (e.g. r-****) to provision StackSet Roles against each account"
+    "ParameterValue": "",
+    "_comment": "OPTIONAL/LEGACY: Root OU - StackSet roles now deploy to specific OUs (OUA/OUB) instead of root OU"
+  },
+  {
+    "ParameterKey": "S3Bucket",
+    "ParameterValue": "your-s3-bucket-name",
+    "_comment": "REQUIRED: S3 bucket containing the CloudFormation templates and Lambda deployment packages"
   },
   {
     "ParameterKey": "OUA",
@@ -93,6 +98,11 @@
     "ParameterKey": "APICredentialsStorageMode",
     "ParameterValue": "secret",
     "_comment": "How Falcon API credentials are stored. Options: lambda (environment variables), secret (AWS Secrets Manager)"
+  },
+  {
+    "ParameterKey": "NestedOUs",
+    "ParameterValue": "True",
+    "_comment": "Choose True to register accounts in nested OUs under the provided OUs. Choose False to only register direct children of provided OUs. Options: True, False"
   },
   {
     "ParameterKey": "Regions",
