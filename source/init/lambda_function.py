@@ -637,7 +637,17 @@ def process_move_account_event(
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler with comprehensive error handling"""
     logger.info(f"Lambda function started - Version: {VERSION}")
-    logger.info(f"Event: {json.dumps(event, default=str)}")
+
+    # Log only non-sensitive event metadata to prevent credential exposure
+    safe_event_info = {
+        "source": event.get("source"),
+        "detail-type": event.get("detail-type"),
+        "account": event.get("account"),
+        "region": event.get("region"),
+        "time": event.get("time"),
+        "id": event.get("id"),
+    }
+    logger.info(f"Event received: {json.dumps(safe_event_info)}")
 
     try:
         # Initialize configuration
