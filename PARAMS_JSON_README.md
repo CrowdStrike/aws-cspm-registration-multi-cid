@@ -26,11 +26,12 @@ This template provides parameters to create two AWS Secrets Manager Secrets, eac
 This section provides the parameters necessary to configure your CSPM Registration.
 | Parameter | Description | Options |
 |---|---|---|
-|CSPMTemplateURL| S3 URL for CSPM Onboarding Template (Commercial Only)||
 |EnableIOA| Whether to enable IOAs| true, false |
+|EnableIDP| Whether to enable Identity Protection| true, false |
 |UseExistingCloudTrail| Select False ONLY if you wish to create a new cloudtrail for Read-Only IOAs (this is not common) | true, false |
-|EnableSensorManagement| Whether to enable 1Click | true, false|
+|EnableSensorManagement| Whether to enable Sensor Management | true, false|
 |APICredentialsStorageMode| If EnableSensorManagement = true, whether to store falcon API credentials in Secrets Manager or as lambda environment variables.| secret, lambda|
+|NestedOUs| Whether to register accounts in nested OUs under the provided OUs (True) or only direct children (False)| true, false|
 |Regions| Which regions to enable IOA|string|
 
 ### Misc
@@ -39,6 +40,6 @@ This section provides additional parameters to complete the deployment of this s
 |---|---|---|
 |S3Bucket| NAME of the S3 Bucket used in Step 3 of Setup| string |
 |AWSAccountType| Whether this AWS Organization is commercial or GovCloud | commercial, govcloud |
-|RootOU| the root OU (eg. r-****) of this AWS Organization | string|
+|RootOU| (Optional/Legacy) Root OU - StackSet roles now deploy to specific OUs (OUA/OUB) instead of root OU | string|
 |StackSetAdminRole| What to Name the Administration Role for CrowdStrike StackSets, this role will be created as a part of this stack | string|
 |StackSetExecRole| What to Name the Execution Role for CrowdStrike StackSets, this role will be created as a part of this stack |string|

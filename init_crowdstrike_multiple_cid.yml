@@ -25,15 +25,25 @@ Metadata:
           - UseExistingCloudTrail
           - EnableSensorManagement
           - APICredentialsStorageMode
+          - NestedOUs
           - Regions
+      - Label: 
+          default: StackSet Configuration
+        Parameters:
+          - StackSetAdminRole
+          - StackSetExecRole
       - Label: 
           default: Misc
         Parameters:
           - S3Bucket
           - AWSAccountType
           - RootOU
-          - StackSetAdminRole
-          - StackSetExecRole
+
+Conditions:
+  HasOUA: !Not [!Equals [!Ref OUA, '']]
+  HasOUB: !Not [!Equals [!Ref OUB, '']]
+  HasBothOUs: !And [!Condition HasOUA, !Condition HasOUB]
+  HasEitherOU: !Or [!Condition HasOUA, !Condition HasOUB]
 
 Parameters:
   StackSetAdminRole:
@@ -45,23 +55,19 @@ Parameters:
     Type: String
     Default: 'CrowdStrikeStackSetExecutionRole'
   OUA:
-    Description: List of OUs for FalconClientIdA & FalconSecretA.
+    Description: List of OUs for FalconClientIdA & FalconSecretA (required for primary CID).
     Type: String
-    Default: ''
   CIDA:
-    Description: Falcon CID for OUA, FalconClientIdA & FalconSecretA.
+    Description: Falcon CID for OUA, FalconClientIdA & FalconSecretA (required for primary CID).
     Type: String
-    Default: ''
   FalconClientIdA:
-    Description: Your CrowdStrike Falcon OAuth2 Client ID for OUA.
+    Description: Your CrowdStrike Falcon OAuth2 Client ID for OUA (required for primary CID).
     NoEcho: 'true'
     Type: String
-    Default: ''
   FalconSecretA:
-    Description: Your CrowdStrike Falcon OAuth2 API Secret for OUA.
+    Description: Your CrowdStrike Falcon OAuth2 API Secret for OUA (required for primary CID).
     NoEcho: 'true'
     Type: String
-    Default: ''
   FalconCloudA:
     Description: Your CrowdStrike Falcon Cloud for OUA.
     Type: String
@@ -141,9 +147,16 @@ Parameters:
     Description: How Falcon API credentials are stored. 'lambda' stores them in the lambda environment variables, 'secret' in an AWS secret
     Default: secret
     AllowedValues: ["lambda", "secret"]
+  NestedOUs:
+    Type: String
+    Description: Choose True to register accounts in nested OUs under the provided OUs. Choose False to only register direct children of provided OUs.
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Default: 'True'
   RootOU:
     Type: String
-    Description: Please enter the Root OU (eg. r-****) to provision StackSet Roles against each account.
+    Description: (Optional/Legacy) Root OU - StackSet roles now deploy to specific OUs (OUA/OUB) instead of root OU.
     Default: ''
   Regions:
     Type: String
@@ -269,13 +282,14 @@ Resources:
   # StackSet to create roles for stackset execution
   StackSetRoleSetup:
     Type: AWS::CloudFormation::StackSet
+    Condition: HasEitherOU
     Properties:
       AutoDeployment: 
         Enabled: true
         RetainStacksOnAccountRemoval: false
       Capabilities: 
         - CAPABILITY_NAMED_IAM
-      Description: Create roles to allow CrowdStrike StackSet Execution
+      Description: Create roles to allow CrowdStrike StackSet Execution in specified OUs
       OperationPreferences: 
         FailureTolerancePercentage: 100
         MaxConcurrentPercentage: 100
@@ -285,13 +299,30 @@ Resources:
         - ParameterKey: StackSetAdminRole
           ParameterValue: !GetAtt StackSetAdministrationRole.Arn
       PermissionModel: SERVICE_MANAGED
-      StackInstancesGroup: 
-        - DeploymentTargets:
-            AccountFilterType: NONE
-            OrganizationalUnitIds: 
-              - !Ref RootOU
-          Regions:
-            - !Ref AWS::Region
+      StackInstancesGroup: !If
+        - HasBothOUs
+        - - DeploymentTargets:
+              AccountFilterType: NONE
+              OrganizationalUnitIds: !Split [',', !Ref OUA]
+            Regions:
+              - !Ref AWS::Region
+          - DeploymentTargets:
+              AccountFilterType: NONE
+              OrganizationalUnitIds: !Split [',', !Ref OUB]
+            Regions:
+              - !Ref AWS::Region
+        - !If
+          - HasOUA
+          - - DeploymentTargets:
+                AccountFilterType: NONE
+                OrganizationalUnitIds: !Split [',', !Ref OUA]
+              Regions:
+                - !Ref AWS::Region
+          - - DeploymentTargets:
+                AccountFilterType: NONE
+                OrganizationalUnitIds: !Split [',', !Ref OUB]
+              Regions:
+                - !Ref AWS::Region
       StackSetName: crowdstrike-stackset-role-setup
       TemplateURL: !Sub https://${S3Bucket}.s3.amazonaws.com/crowdstrike_stackset_role_setup.yml
 
@@ -351,7 +382,6 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn:
       - CrowdStrikeSecretA
-      - CrowdStrikeSecretB
       - StackSetRoleSetup
     Properties:
       Environment:
@@ -368,9 +398,13 @@ Resources:
           regions: !Ref Regions
           accounts: 'auto'
           secret: 'auto'
-          secret_list: !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
+          secret_list: !If
+            - HasOUB
+            - !Join [ ",", [ !Ref CrowdStrikeSecretA, !Ref CrowdStrikeSecretB ] ]
+            - !Ref CrowdStrikeSecretA
           parent_stack: !Ref AWS::StackName
           identity_protection: !Ref EnableIDP
+          nested_ous: !Ref NestedOUs
       Handler: lambda_function.lambda_handler
       MemorySize: 128
       Role: !GetAtt "LambdaCrowdStrikeRegistrationRole.Arn"
@@ -432,6 +466,7 @@ Resources:
             - Ref: CIDA
             - '"}'
   CrowdStrikeSecretB:
+    Condition: HasOUB
     Type: AWS::SecretsManager::Secret
     Properties:
       Description: CrowdStrike Credentials

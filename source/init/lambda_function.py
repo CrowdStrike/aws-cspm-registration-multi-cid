@@ -54,6 +54,7 @@ class LambdaConfig:
     accounts: str
     parent_stack: str
     identity_protection: bool
+    nested_ous: bool
 
     @classmethod
     def from_environment(cls) -> "LambdaConfig":
@@ -95,6 +96,7 @@ class LambdaConfig:
                 identity_protection=parse_bool(
                     os.environ.get("identity_protection", "false")
                 ),
+                nested_ous=parse_bool(os.environ.get("nested_ous", "true")),
             )
         except (ValueError, KeyError) as e:
             logger.error(f"Configuration error: {e}")
@@ -399,11 +401,12 @@ class RegionManager:
 class OrganizationManager:
     """Manage AWS Organizations operations"""
 
-    def __init__(self, aws_client_manager: AWSClientManager):
+    def __init__(self, aws_client_manager: AWSClientManager, config: LambdaConfig):
         self.client_manager = aws_client_manager
+        self.config = config
 
     def get_accounts_from_ous(self, ou_list: str) -> List[str]:
-        """Get account IDs from Organizational Units"""
+        """Get account IDs from Organizational Units, optionally including nested sub-OUs"""
         try:
             client = self.client_manager.get_client("organizations")
             accounts = []
@@ -412,14 +415,23 @@ class OrganizationManager:
 
             for ou in ous:
                 try:
-                    response = client.list_children(ParentId=ou, ChildType="ACCOUNT")
-                    ou_accounts = [
-                        child["Id"] for child in response.get("Children", [])
-                    ]
+                    if self.config.nested_ous:
+                        # Recursive mode: find accounts in nested OUs
+                        ou_accounts = self._get_accounts_recursive(client, ou)
+                        logger.info(
+                            f"Found {len(ou_accounts)} total accounts in OU {ou} (including nested)"
+                        )
+                    else:
+                        # Direct mode: only find direct child accounts
+                        ou_accounts = self._get_accounts_direct(client, ou)
+                        logger.info(
+                            f"Found {len(ou_accounts)} direct accounts in OU {ou}"
+                        )
+
                     accounts.extend(ou_accounts)
-                    logger.info(f"Found {len(ou_accounts)} accounts in OU {ou}")
+
                 except ClientError as e:
-                    logger.error(f"Failed to list children for OU {ou}: {e}")
+                    logger.error(f"Failed to process OU {ou}: {e}")
                     continue
 
             return list(set(accounts))  # Remove duplicates
@@ -427,6 +439,99 @@ class OrganizationManager:
         except Exception as e:
             logger.error(f"Failed to get accounts from OUs: {e}")
             raise
+
+    def _get_accounts_direct(self, client, parent_id: str) -> List[str]:
+        """Get only direct child accounts from an OU (non-recursive)"""
+        accounts = []
+        try:
+            logger.info(f"Searching for direct accounts in OU: {parent_id}")
+
+            # Get direct child accounts with pagination
+            paginator = client.get_paginator("list_children")
+            account_pages = paginator.paginate(ParentId=parent_id, ChildType="ACCOUNT")
+
+            for page in account_pages:
+                page_accounts = [child["Id"] for child in page.get("Children", [])]
+                accounts.extend(page_accounts)
+
+            if accounts:
+                logger.info(f"Found {len(accounts)} direct accounts: {accounts}")
+            else:
+                logger.info(f"No direct accounts found in OU {parent_id}")
+
+        except ClientError as e:
+            logger.error(f"Failed to search OU {parent_id}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error searching OU {parent_id}: {e}")
+
+        logger.info(f"OU {parent_id} direct accounts: {len(accounts)}")
+        return accounts
+
+    def _get_accounts_recursive(
+        self, client, parent_id: str, depth: int = 0
+    ) -> List[str]:
+        """Recursively get all accounts from an OU and its nested OUs with pagination support"""
+        accounts = []
+        indent = "  " * depth
+        try:
+            logger.info(f"{indent}Searching OU: {parent_id} (depth: {depth})")
+
+            # Get direct child accounts with pagination
+            paginator = client.get_paginator("list_children")
+            account_pages = paginator.paginate(ParentId=parent_id, ChildType="ACCOUNT")
+
+            direct_accounts = []
+            for page in account_pages:
+                page_accounts = [child["Id"] for child in page.get("Children", [])]
+                direct_accounts.extend(page_accounts)
+
+            accounts.extend(direct_accounts)
+
+            if direct_accounts:
+                logger.info(
+                    f"{indent}Found {len(direct_accounts)} direct accounts: {direct_accounts}"
+                )
+            else:
+                logger.info(f"{indent}No direct accounts found")
+
+            # Get nested OUs with pagination
+            ou_pages = paginator.paginate(
+                ParentId=parent_id, ChildType="ORGANIZATIONAL_UNIT"
+            )
+
+            nested_ous = []
+            for page in ou_pages:
+                page_ous = [child["Id"] for child in page.get("Children", [])]
+                nested_ous.extend(page_ous)
+
+            if nested_ous:
+                logger.info(f"{indent}Found {len(nested_ous)} nested OUs: {nested_ous}")
+
+                # Recursively search nested OUs
+                for nested_ou in nested_ous:
+                    try:
+                        nested_accounts = self._get_accounts_recursive(
+                            client, nested_ou, depth + 1
+                        )
+                        accounts.extend(nested_accounts)
+                        logger.info(
+                            f"{indent}OU {nested_ou} contributed {len(nested_accounts)} accounts"
+                        )
+                    except ClientError as e:
+                        logger.error(
+                            f"{indent}Failed to search nested OU {nested_ou}: {e}"
+                        )
+                        continue
+            else:
+                logger.info(f"{indent}No nested OUs found")
+
+        except ClientError as e:
+            logger.error(f"{indent}Failed to search OU {parent_id}: {e}")
+        except Exception as e:
+            logger.error(f"{indent}Unexpected error searching OU {parent_id}: {e}")
+
+        logger.info(f"{indent}OU {parent_id} total accounts: {len(accounts)}")
+        return accounts
 
 
 def is_move_account_event(event: Dict[str, Any]) -> bool:
@@ -532,7 +637,17 @@ def process_move_account_event(
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler with comprehensive error handling"""
     logger.info(f"Lambda function started - Version: {VERSION}")
-    logger.info(f"Event: {json.dumps(event, default=str)}")
+
+    # Log only non-sensitive event metadata to prevent credential exposure
+    safe_event_info = {
+        "source": event.get("source"),
+        "detail-type": event.get("detail-type"),
+        "account": event.get("account"),
+        "region": event.get("region"),
+        "time": event.get("time"),
+        "id": event.get("id"),
+    }
+    logger.info(f"Event received: {json.dumps(safe_event_info)}")
 
     try:
         # Initialize configuration
@@ -545,7 +660,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         registrar = CrowdStrikeRegistrar(config)
         stackset_manager = StackSetManager(config, aws_client_manager)
         region_manager = RegionManager(config, aws_client_manager)
-        org_manager = OrganizationManager(aws_client_manager)
+        org_manager = OrganizationManager(aws_client_manager, config)
 
         # Get regions
         my_regions, comm_gov_eb_regions = region_manager.get_active_regions()
@@ -843,7 +958,7 @@ def orchestrate_stacksets(
                 }
             )
 
-            template_url = "https://cs-prod-cloudconnect-templates.s3-us-west-1.amazonaws.com/aws_cspm_cloudformation_lambda_v2.json"
+            template_url = "https://cs-prod-cloudconnect-templates.s3-us-west-1.amazonaws.com/modular/cs_aws_root.yaml"
 
             # Main CSPM stackset: current region only
             return stackset_manager.create_standard_stackset(
