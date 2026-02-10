@@ -53,6 +53,7 @@ Resources:
                 Effect: Allow
               - Action:
                 - iam:GetRole
+                - iam:UpdateAssumeRolePolicy
                 - iam:CreateRole
                 - iam:DeleteRole
                 - iam:CreatePolicy
