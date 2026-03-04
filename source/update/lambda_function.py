@@ -16,8 +16,18 @@ EXEC_ROLE_NAME = os.environ["exec_role_arn"]
 
 def get_stacksets_created_by_init() -> List[Tuple[str, str]]:
     """
-    Find all stacksets created by the init function.
-    Returns list of tuples: (stackset_name, template_url)
+    Find all base CSPM stacksets created by the init function.
+
+    Returns:
+        List of tuples: (stackset_name, template_url)
+
+    Only includes base CSPM stacksets matching the pattern:
+    - CrowdStrike-Cloud-Security-Stackset-{account}
+
+    Excludes:
+    - Infrastructure stacksets: crowdstrike-stackset-role-setup
+    - EB stacksets: CrowdStrike-Cloud-Security-Stackset-{account}-EB
+    - IOA stacksets: CrowdStrike-Cloud-Security-Stackset-{account}-IOA
     """
     try:
         stacksets_with_template_urls = []
@@ -37,15 +47,25 @@ def get_stacksets_created_by_init() -> List[Tuple[str, str]]:
         for summary in summaries:
             stackset_name = summary["StackSetName"]
 
-            # Only check CrowdStrike stacksets for efficiency
-            if "CrowdStrike" in stackset_name or "CSPM" in stackset_name:
+            # Only check base CSPM stacksets created by init function
+            # Pattern: CrowdStrike-Cloud-Security-Stackset-{account}
+            # Exclude EB and IOA suffixes
+            if (
+                stackset_name.startswith("CrowdStrike-Cloud-Security-Stackset-")
+                and "-EB" not in stackset_name.upper()
+                and "-IOA" not in stackset_name.upper()
+            ):
                 try:
                     template_url = get_template_url_from_stackset(client, stackset_name)
                     if template_url:
                         stacksets_with_template_urls.append(
                             (stackset_name, template_url)
                         )
-                        logger.info(f"Found stackset created by init: {stackset_name}")
+                        logger.info(f"Found base CSPM stackset: {stackset_name}")
+                    else:
+                        logger.info(
+                            f"Skipping {stackset_name} (no template_url tag found)"
+                        )
                 except Exception as e:
                     logger.warning(
                         f"Could not get template URL for {stackset_name}: {e}"
@@ -124,6 +144,7 @@ def update_stackset(stackset_name: str, template_url: str) -> bool:
                 {"ParameterKey": "CSRoleName", "UsePreviousValue": True},
                 {"ParameterKey": "DSPMRegions", "UsePreviousValue": True},
                 {"ParameterKey": "DSPMRoleName", "UsePreviousValue": True},
+                {"ParameterKey": "DefaultEventBusRegion", "UsePreviousValue": True},
                 {"ParameterKey": "EnableDSPM", "UsePreviousValue": True},
                 {"ParameterKey": "EnableIdentityProtection", "UsePreviousValue": True},
                 {"ParameterKey": "EnableIOA", "UsePreviousValue": True},
@@ -149,19 +170,23 @@ def update_stackset(stackset_name: str, template_url: str) -> bool:
 
 
 def lambda_handler(event, context):
-    """Main Function"""
+    """
+    Main Function
+
+    Updates base CSPM stacksets only. EB and IOA stacksets are not managed by this function.
+    """
     logger.info("Got event %s", event)
     logger.info("Context %s", context)
 
     try:
-        # Get all stacksets created by the init function with their template URLs
+        # Get all base CSPM stacksets with their template URLs
         stacksets_with_urls = get_stacksets_created_by_init()
 
         if not stacksets_with_urls:
-            logger.warning("No stacksets created by init function found to update")
-            return {"statusCode": 200, "body": "No stacksets found to update"}
+            logger.warning("No base CSPM stacksets found to update")
+            return {"statusCode": 200, "body": "No base CSPM stacksets found to update"}
 
-        logger.info(f"Found {len(stacksets_with_urls)} stacksets to update")
+        logger.info(f"Found {len(stacksets_with_urls)} base CSPM stacksets to update")
 
         # Track results
         successful_updates = []
@@ -189,7 +214,7 @@ def lambda_handler(event, context):
         return {
             "statusCode": 200,
             "body": {
-                "message": f"Processed {len(stacksets_with_urls)} stacksets",
+                "message": f"Processed {len(stacksets_with_urls)} base CSPM stacksets",
                 "successful_updates": successful_updates,
                 "failed_updates": failed_updates,
             },
