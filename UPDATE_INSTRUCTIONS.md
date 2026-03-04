@@ -1,9 +1,11 @@
 # Update Instructions
 
 ## Apply Latest CSPM Template
-On occasion CrowdStrike will add new permissions requirements for the IAM role used for CSPM to ensure the latest AWS services are protected. The update function automatically identifies and updates all stacksets created by the init function.
+On occasion CrowdStrike will add new permissions requirements for the IAM role used for CSPM to ensure the latest AWS services are protected. The update function automatically identifies and updates all base CSPM stacksets created by the init function.
 
-To update your existing IAM Roles complete the following steps: 
+**Note**: This function only updates base CSPM stacksets. EB and IOA stacksets are managed separately and are not affected by this update function.
+
+To update your existing IAM Roles complete the following steps:
 
 ### Invoke Update with CLI
 
@@ -15,12 +17,22 @@ aws lambda invoke \
 ```
 
 ### Invoke Update manually in AWS Console
-1. Navigate to Lambda and open the crowdstrike-cloud-update-stacksets function.
-2. Create and save an empty test event. eg. {}
+1. Navigate to Lambda and open the crowdstrike-multi-cid-update-stacksets function.
+2. Create and save an empty test event: `{}`
 3. Click test. This will invoke the function and automatically:
-   - Find all stacksets created by the init function (using `template_url` tags)
+   - Find all base CSPM stacksets created by the init function (using `template_url` tags)
    - Retrieve the current template URL for each stackset
    - Apply the latest template to update permissions
+
+## What Gets Updated
+
+The update function only processes **base CSPM stacksets** that match the pattern:
+- `CrowdStrike-Cloud-Security-Stackset-{account}`
+
+The following are **excluded** from updates:
+- Infrastructure stacksets: `crowdstrike-stackset-role-setup`
+- EB stacksets: `CrowdStrike-Cloud-Security-Stackset-{account}-EB`
+- IOA stacksets: `CrowdStrike-Cloud-Security-Stackset-{account}-IOA`
 
 ## Enable/Disable Services
 This solution allows for services to be enabled or disabled after the initial deployment.

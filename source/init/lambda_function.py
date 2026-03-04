@@ -991,7 +991,7 @@ def orchestrate_stacksets(
             # Commercial to Gov
             base_params["EnableIOA"] = "false"  # Hardcoded for comm to gov
 
-            template_url = f"https://{config.s3_bucket}.s3.{config.aws_region}.amazonaws.com/crowdstrike_aws_cspm.json"
+            template_url = "https://cs-prod-cloudconnect-templates.s3-us-west-1.amazonaws.com/aws_cspm_cloudformation_lambda_v2.json"
 
             # Main CSPM stackset: current region only
             success = stackset_manager.create_standard_stackset(
