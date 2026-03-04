@@ -106,6 +106,21 @@ def has_template_url_tag(tags: List[Dict[str, str]]) -> Optional[str]:
     return None
 
 
+def get_stackset_arn(client, stackset_name: str, call_as: str = 'SELF') -> Optional[str]:
+    """Get the ARN of a stackset."""
+    try:
+        kwargs = {'StackSetName': stackset_name}
+        if call_as == 'DELEGATED_ADMIN':
+            kwargs['CallAs'] = 'DELEGATED_ADMIN'
+
+        response = client.describe_stack_set(**kwargs)
+        return response.get('StackSet', {}).get('StackSetArn')
+
+    except (ClientError, BotoCoreError) as error:
+        logger.error(f"Error getting ARN for {stackset_name}: {error}")
+        return None
+
+
 def tag_stackset(
     client,
     stackset_name: str,
@@ -114,7 +129,8 @@ def tag_stackset(
     dry_run: bool = False
 ) -> bool:
     """
-    Add or update the template_url tag on a stackset.
+    Add or update the template_url tag on a stackset using tag_resource API.
+    This is lightweight and does not trigger stack instance operations.
     Returns True if successful or skipped (dry run), False otherwise.
     """
     try:
@@ -132,56 +148,26 @@ def tag_stackset(
                 logger.info(f"  → {stackset_name} has different template_url: {current_template_url}")
                 logger.info(f"    Will update to: {template_url}")
 
-        # Prepare new tags
-        new_tags = [tag for tag in existing_tags if tag.get('Key') != 'template_url']
-        new_tags.append({'Key': 'template_url', 'Value': template_url})
-
         if dry_run:
             logger.info(f"  [DRY RUN] Would tag {stackset_name} with template_url={template_url}")
             return True
 
-        # Update stackset tags
-        kwargs = {
-            'StackSetName': stackset_name,
-            'Tags': new_tags
-        }
-        if call_as == 'DELEGATED_ADMIN':
-            kwargs['CallAs'] = 'DELEGATED_ADMIN'
+        # Get stackset ARN for tag_resource API
+        stackset_arn = get_stackset_arn(client, stackset_name, call_as)
+        if not stackset_arn:
+            logger.error(f"  ✗ Could not get ARN for {stackset_name}")
+            return False
 
-        # Use update_stack_set to update tags
-        # We need to preserve all other settings
-        describe_kwargs = {'StackSetName': stackset_name}
-        if call_as == 'DELEGATED_ADMIN':
-            describe_kwargs['CallAs'] = 'DELEGATED_ADMIN'
-
-        stackset_info = client.describe_stack_set(**describe_kwargs)
-        stackset = stackset_info['StackSet']
-
-        update_kwargs = {
-            'StackSetName': stackset_name,
-            'UsePreviousTemplate': True,
-            'Tags': new_tags,
-            'Capabilities': stackset.get('Capabilities', []),
-            'PermissionModel': stackset.get('PermissionModel', 'SELF_MANAGED'),
-        }
-
-        # Add administration role ARN if it exists
-        if stackset.get('AdministrationRoleARN'):
-            update_kwargs['AdministrationRoleARN'] = stackset['AdministrationRoleARN']
-        if stackset.get('ExecutionRoleName'):
-            update_kwargs['ExecutionRoleName'] = stackset['ExecutionRoleName']
-
-        if call_as == 'DELEGATED_ADMIN':
-            update_kwargs['CallAs'] = 'DELEGATED_ADMIN'
-
-        # Preserve all parameters with UsePreviousValue
-        if stackset.get('Parameters'):
-            update_kwargs['Parameters'] = [
-                {'ParameterKey': param['ParameterKey'], 'UsePreviousValue': True}
-                for param in stackset['Parameters']
+        # Use tag_resource API - lightweight, doesn't trigger stack instance operations
+        client.tag_resource(
+            ResourceArn=stackset_arn,
+            Tags=[
+                {
+                    'Key': 'template_url',
+                    'Value': template_url
+                }
             ]
-
-        client.update_stack_set(**update_kwargs)
+        )
         logger.info(f"  ✓ Successfully tagged {stackset_name}")
         return True
 
@@ -231,6 +217,11 @@ def main():
         help='Show what would be tagged without actually tagging'
     )
     parser.add_argument(
+        '--yes',
+        action='store_true',
+        help='Skip confirmation prompts (for automation). Cannot be used with --dry-run.'
+    )
+    parser.add_argument(
         '--log-level',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
         default='INFO',
@@ -238,6 +229,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Validate arguments
+    if args.yes and args.dry_run:
+        logger.error("ERROR: --yes and --dry-run cannot be used together")
+        return 1
 
     # Set log level
     logger.setLevel(getattr(logging, args.log_level))
@@ -255,6 +251,8 @@ def main():
             logger.info(f"Custom Template URL: {args.template_url}")
         if args.dry_run:
             logger.info("DRY RUN MODE - No changes will be made")
+        if args.yes:
+            logger.info("AUTO-APPROVE MODE - Skipping confirmation prompts")
         logger.info("")
         logger.info("Note: Only base CSPM stacksets will be tagged. EB and IOA stacksets are excluded.")
         logger.info("")
@@ -309,8 +307,8 @@ def main():
         logger.info("")
         logger.info("=" * 80)
 
-        # Confirm before proceeding
-        if not args.dry_run:
+        # Confirm before proceeding (unless --yes flag is provided)
+        if not args.dry_run and not args.yes:
             logger.info("")
             confirmation = input(f"Tag {len(stacksets_to_tag)} stackset(s)? Type 'YES' to confirm: ")
             if confirmation != 'YES':

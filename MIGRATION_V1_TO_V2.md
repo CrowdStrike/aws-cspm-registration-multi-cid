@@ -1,6 +1,6 @@
 # Migration Guide: v1.0 to v2.0.0
 
-This guide helps customers migrate from v1.0  to v2.0.0+.
+This guide helps customers migrate from v1.0 to v2.0.0+.
 
 ## Breaking Changes in v2.0.0
 
@@ -41,6 +41,9 @@ python3 tag_existing_stacksets.py --call-as DELEGATED_ADMIN --dry-run
 # Tag stacksets (will prompt for confirmation)
 python3 tag_existing_stacksets.py
 
+# Tag stacksets without confirmation (for automation)
+python3 tag_existing_stacksets.py --yes
+
 # Use custom template URL (for air-gapped/private deployments)
 python3 tag_existing_stacksets.py \
   --template-url https://my-bucket.s3.us-east-1.amazonaws.com/crowdstrike_aws_cspm.json
@@ -51,7 +54,10 @@ python3 tag_existing_stacksets.py \
 - `--template-url`: Custom template URL for all stacksets
 - `--call-as`: Use DELEGATED_ADMIN for delegated admin deployments
 - `--dry-run`: Preview changes without applying them
+- `--yes`: Skip confirmation prompts (for automation pipelines)
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR)
+
+**Note**: The `--yes` flag cannot be used with `--dry-run`.
 
 #### Step 2: Delete Old Stack
 
