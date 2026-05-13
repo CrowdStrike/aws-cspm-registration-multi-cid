@@ -55,6 +55,15 @@ class LambdaConfig:
     parent_stack: str
     identity_protection: bool
     nested_ous: bool
+    enable_asset_inventory: bool
+    enable_dspm: bool
+    enable_vulnerability_scanning: bool
+    permissions_boundary: str
+    resource_prefix: str
+    resource_suffix: str
+    log_ingestion_method: str
+    realtime_visibility_regions: str
+    dspm_regions: str
 
     @classmethod
     def from_environment(cls) -> "LambdaConfig":
@@ -97,6 +106,21 @@ class LambdaConfig:
                     os.environ.get("identity_protection", "false")
                 ),
                 nested_ous=parse_bool(os.environ.get("nested_ous", "true")),
+                enable_asset_inventory=parse_bool(
+                    os.environ.get("enable_asset_inventory", "true")
+                ),
+                enable_dspm=parse_bool(os.environ.get("enable_dspm", "false")),
+                enable_vulnerability_scanning=parse_bool(
+                    os.environ.get("enable_vulnerability_scanning", "false")
+                ),
+                permissions_boundary=os.environ.get("permissions_boundary", ""),
+                resource_prefix=os.environ.get("resource_prefix", "CrowdStrike-"),
+                resource_suffix=os.environ.get("resource_suffix", ""),
+                log_ingestion_method=os.environ.get("log_ingestion_method", "eventbridge"),
+                realtime_visibility_regions=os.environ.get(
+                    "realtime_visibility_regions", ""
+                ),
+                dspm_regions=os.environ.get("dspm_regions", ""),
             )
         except (ValueError, KeyError) as e:
             logger.error(f"Configuration error: {e}")
@@ -322,7 +346,7 @@ class StackSetManager:
                 Description=f"StackSet to onboard account {account} with CrowdStrike{stackset_suffix}",
                 TemplateURL=template_url,
                 Parameters=self._create_stackset_parameters(parameters),
-                Capabilities=["CAPABILITY_NAMED_IAM"],
+                Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
                 AdministrationRoleARN=self.config.stackset_admin_role,
                 ExecutionRoleName=self.config.stackset_exec_role,
                 PermissionModel="SELF_MANAGED",
@@ -351,11 +375,12 @@ class StackSetManager:
 
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
+            error_message = e.response["Error"].get("Message", "")
             if error_code == "NameAlreadyExistsException":
                 logger.warning(f"StackSet {stackset_name} already exists")
                 return True
             else:
-                logger.error(f"Failed to create StackSet {stackset_name}: {error_code}")
+                logger.error(f"Failed to create StackSet {stackset_name}: {error_code} - {error_message}")
                 return False
         except Exception as e:
             logger.error(f"Unexpected error creating StackSet {stackset_name}: {e}")
@@ -924,18 +949,31 @@ def orchestrate_stacksets(
     """Orchestrate StackSet creation based on cloud type"""
 
     try:
-        # Common parameters
+        # Construct CSRoleArn from cs_account_id and cs_role_name
+        cs_role_arn = f"arn:aws:iam::{cs_account_id}:role/{cs_role_name}"
+
+        # Common parameters - aligned with cs_aws_root.yaml v7.2
         base_params = {
             "RoleName": iam_role_name,
             "ExternalID": external_id,
-            "CSRoleName": cs_role_name,
-            "CSAccountNumber": cs_account_id,
-            "ClientID": credentials["FalconClientId"],
-            "ClientSecret": credentials["FalconSecret"],
-            "UseExistingCloudtrail": str(config.existing_cloudtrail).lower(),
-            "EnableSensorManagement": str(config.sensor_management).lower(),
-            "APICredentialsStorageMode": config.credentials_storage,
+            "CSRoleArn": cs_role_arn,
+            "FalconClientID": credentials["FalconClientId"],
+            "FalconClientSecret": credentials["FalconSecret"],
+            "UseExistingCloudTrail": str(config.existing_cloudtrail).lower(),
+            "Enable1ClickSensorManagement": str(config.sensor_management).lower(),
+            "EnableAssetInventory": str(config.enable_asset_inventory).lower(),
+            "EnableDSPM": str(config.enable_dspm).lower(),
+            "EnableVulnerabilityScanning": str(config.enable_vulnerability_scanning).lower(),
+            "LogIngestionMethod": config.log_ingestion_method,
         }
+
+        # Add optional parameters - always include even if empty so CloudFormation
+        # receives all template parameters explicitly on create
+        base_params["PermissionsBoundary"] = config.permissions_boundary
+        base_params["ResourcePrefix"] = config.resource_prefix
+        base_params["ResourceSuffix"] = config.resource_suffix
+        base_params["RealtimeVisibilityRegions"] = config.realtime_visibility_regions
+        base_params["DSPMRegions"] = config.dspm_regions
 
         # Add cloud trail bucket if not using existing
         if not config.existing_cloudtrail:
@@ -951,10 +989,17 @@ def orchestrate_stacksets(
         if "gov" not in falcon_cloud:
             # Commercial cloud - Main stackset deploys to current region only
             cs_eventbus_name = response["body"]["resources"][0].get("eventbus_name", "")
+            # Template expects a full ARN; the API returns only the event bus name
+            if cs_eventbus_name and not cs_eventbus_name.startswith("arn:"):
+                cs_eventbus_arn = (
+                    f"arn:aws:events:{config.aws_region}:{account}:event-bus/{cs_eventbus_name}"
+                )
+            else:
+                cs_eventbus_arn = cs_eventbus_name
             base_params.update(
                 {
-                    "CSEventBusName": cs_eventbus_name,
-                    "EnableIOA": str(config.enable_ioa).lower(),
+                    "EventBridgeArn": cs_eventbus_arn,
+                    "EnableRealtimeVisibilityAndDetection": str(config.enable_ioa).lower(),
                 }
             )
 
