@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError, BotoCoreError
 
 # Import FalconPy
 try:
-    from falconpy import CSPMRegistration, CloudAWSRegistration
+    from falconpy import CloudAWSRegistration
 except ImportError:
     print("ERROR: falconpy not available")
     sys.exit(1)
@@ -202,28 +202,46 @@ class CrowdStrikeRegistrar:
     def register_account(
         self, account: str, credentials: Dict[str, str]
     ) -> Dict[str, Any]:
-        """Register AWS Account with Falcon CSPM"""
+        """Register AWS Account with CloudAWSRegistration"""
         try:
-            falcon = CSPMRegistration(
+            falcon = CloudAWSRegistration(
                 client_id=credentials["FalconClientId"],
                 client_secret=credentials["FalconSecret"],
                 base_url=credentials["FalconCloud"],
                 user_agent=USER_AGENT,
             )
 
-            params = {
-                "account_id": account,
-                "account_type": self.config.aws_account_type,
-                "behavior_assessment_enabled": True,
-                "sensor_management_enabled": self.config.sensor_management,
-                "use_existing_cloudtrail": self.config.existing_cloudtrail,
-                "user_agent": USER_AGENT,
-            }
+            # iom (asset inventory) is always enabled; add optional cspm features
+            cspm_features = ["iom"]
+            if self.config.enable_ioa:
+                cspm_features.append("ioa")
+            if self.config.sensor_management:
+                cspm_features.append("sensormgmt")
+            if self.config.enable_dspm:
+                cspm_features.append("dspm")
+            if self.config.enable_vulnerability_scanning:
+                cspm_features.append("vulnerability_scanning")
 
-            if not self.config.existing_cloudtrail:
-                params["aws_cloudtrail_region"] = self.config.aws_region
+            products = [{"features": cspm_features, "product": "cspm"}]
 
-            response = falcon.create_aws_account(**params)
+            # idp is a separate product
+            if self.config.identity_protection:
+                products.append({"features": ["default"], "product": "idp"})
+
+            # csp_events required when ioa or idp is active
+            csp_events = self.config.enable_ioa or self.config.identity_protection
+
+            response = falcon.create_account(
+                body={
+                    "resources": [{
+                        "account_id": account,
+                        "account_type": self.config.aws_account_type,
+                        "csp_events": csp_events,
+                        "deployment_method": "cft",
+                        "products": products,
+                    }]
+                }
+            )
             logger.info(
                 f"Registration response for account {account}: status={response.get('status_code')}"
             )
@@ -232,36 +250,6 @@ class CrowdStrikeRegistrar:
 
         except Exception as e:
             logger.error(f"Failed to register account {account}: {e}")
-            raise
-
-    def register_features(
-        self, credentials: Dict[str, str], aws_account_id: str
-    ) -> Dict[str, Any]:
-        """Register account with Cloud features"""
-        try:
-            falcon_cloud = CloudAWSRegistration(
-                client_id=credentials["FalconClientId"],
-                client_secret=credentials["FalconSecret"],
-                user_agent=USER_AGENT,
-            )
-
-            response = falcon_cloud.create_account(
-                account_id=aws_account_id,
-                user_agent=USER_AGENT,
-                is_master=True,
-                account_type=self.config.aws_account_type,
-                products=[{"features": ["default"], "product": "idp"}],
-            )
-
-            logger.info(
-                f"Feature registration response for {aws_account_id}: status={response.get('status_code')}"
-            )
-            return response
-
-        except Exception as e:
-            logger.error(
-                f"Failed to register features for account {aws_account_id}: {e}"
-            )
             raise
 
 
@@ -868,7 +856,7 @@ def process_single_account(
         # Register account with CrowdStrike
         response = registrar.register_account(account, credentials)
 
-        if response.get("status_code") == 400:
+        if response.get("status_code", 0) >= 400:
             error_msg = (
                 response.get("body", {})
                 .get("errors", [{}])[0]
@@ -877,27 +865,18 @@ def process_single_account(
             logger.error(f"Account {account} registration failed: {error_msg}")
             return False
 
-        elif response.get("status_code") == 201:
+        elif response.get("status_code") in (200, 201):
             logger.info(f"Account {account} registration succeeded")
-
-            # Register identity protection features if enabled
-            if config.identity_protection:
-                try:
-                    registrar.register_features(credentials, account)
-                except Exception as e:
-                    logger.error(
-                        f"Failed to register identity protection for {account}: {e}"
-                    )
-                    # Continue processing even if feature registration fails
 
             # Extract registration details
             try:
                 resource = response["body"]["resources"][0]
-                cs_account = resource["intermediate_role_arn"].split("::")[1]
+                metadata = resource["resource_metadata"]
+                cs_account = metadata["intermediate_role_arn"].split("::")[1]
                 cs_account_id = cs_account.split(":")[0]
-                iam_role_name = resource["iam_role_arn"].split("/")[-1]
-                cs_role_name = resource["intermediate_role_arn"].split("/")[-1]
-                external_id = resource["external_id"]
+                iam_role_name = metadata["iam_role_arn"].split("/")[-1]
+                cs_role_name = metadata["intermediate_role_arn"].split("/")[-1]
+                external_id = metadata["external_id"]
 
                 # Create StackSets based on cloud type
                 return orchestrate_stacksets(
@@ -950,7 +929,8 @@ def orchestrate_stacksets(
 
     try:
         # Construct CSRoleArn from cs_account_id and cs_role_name
-        cs_role_arn = f"arn:aws:iam::{cs_account_id}:role/{cs_role_name}"
+        partition = "aws-us-gov" if "gov" in falcon_cloud else "aws"
+        cs_role_arn = f"arn:{partition}:iam::{cs_account_id}:role/{cs_role_name}"
 
         # Common parameters - aligned with cs_aws_root.yaml v7.2
         base_params = {
@@ -978,8 +958,8 @@ def orchestrate_stacksets(
         # Add cloud trail bucket if not using existing
         if not config.existing_cloudtrail:
             cs_bucket_name = response["body"]["resources"][0].get(
-                "aws_cloudtrail_bucket_name", "none"
-            )
+                "resource_metadata", {}
+            ).get("aws_cloudtrail_bucket_name", "none")
         else:
             cs_bucket_name = "none"
 
@@ -988,7 +968,9 @@ def orchestrate_stacksets(
         # Handle different cloud configurations with proper region targeting
         if "gov" not in falcon_cloud:
             # Commercial cloud - Main stackset deploys to current region only
-            cs_eventbus_name = response["body"]["resources"][0].get("eventbus_name", "")
+            cs_eventbus_name = response["body"]["resources"][0].get(
+                "resource_metadata", {}
+            ).get("eventbus_name", "")
             # Template expects a full ARN; the API returns only the event bus name
             if cs_eventbus_name and not cs_eventbus_name.startswith("arn:"):
                 cs_eventbus_arn = (
@@ -1016,7 +998,9 @@ def orchestrate_stacksets(
         elif "gov" in falcon_cloud and config.aws_account_type == "govcloud":
             # Gov to Gov
             cs_eventbus_name = (
-                response["body"]["resources"][0].get("eventbus_name", "").split(",")[0]
+                response["body"]["resources"][0].get(
+                    "resource_metadata", {}
+                ).get("eventbus_name", "").split(",")[0]
             )
             base_params.update(
                 {
