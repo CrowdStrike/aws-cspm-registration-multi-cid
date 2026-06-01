@@ -239,6 +239,8 @@ class CrowdStrikeRegistrar:
                         "csp_events": csp_events,
                         "deployment_method": "cft",
                         "products": products,
+                        "resource_name_prefix": self.config.resource_prefix,
+                        "resource_name_suffix": self.config.resource_suffix,
                     }]
                 }
             )
@@ -872,10 +874,7 @@ def process_single_account(
             try:
                 resource = response["body"]["resources"][0]
                 metadata = resource["resource_metadata"]
-                cs_account = metadata["intermediate_role_arn"].split("::")[1]
-                cs_account_id = cs_account.split(":")[0]
                 iam_role_name = metadata["iam_role_arn"].split("/")[-1]
-                cs_role_name = metadata["intermediate_role_arn"].split("/")[-1]
                 external_id = metadata["external_id"]
 
                 # Create StackSets based on cloud type
@@ -885,8 +884,7 @@ def process_single_account(
                     account,
                     iam_role_name,
                     external_id,
-                    cs_role_name,
-                    cs_account_id,
+                    metadata,
                     credentials,
                     config,
                     stackset_manager,
@@ -917,8 +915,7 @@ def orchestrate_stacksets(
     account: str,
     iam_role_name: str,
     external_id: str,
-    cs_role_name: str,
-    cs_account_id: str,
+    metadata: Dict[str, Any],
     credentials: Dict[str, str],
     config: LambdaConfig,
     stackset_manager: StackSetManager,
@@ -928,9 +925,8 @@ def orchestrate_stacksets(
     """Orchestrate StackSet creation based on cloud type"""
 
     try:
-        # Construct CSRoleArn from cs_account_id and cs_role_name
-        partition = "aws-us-gov" if "gov" in falcon_cloud else "aws"
-        cs_role_arn = f"arn:{partition}:iam::{cs_account_id}:role/{cs_role_name}"
+        # Use intermediate_role_arn directly from registration response
+        cs_role_arn = metadata["intermediate_role_arn"]
 
         # Common parameters - aligned with cs_aws_root.yaml v7.2
         base_params = {
@@ -945,6 +941,8 @@ def orchestrate_stacksets(
             "EnableDSPM": str(config.enable_dspm).lower(),
             "EnableVulnerabilityScanning": str(config.enable_vulnerability_scanning).lower(),
             "LogIngestionMethod": config.log_ingestion_method,
+            "StackSetAdminRole": config.stackset_admin_role.split("/")[-1],
+            "StackSetExecRole": config.stackset_exec_role,
         }
 
         # Add optional parameters - always include even if empty so CloudFormation
@@ -968,16 +966,11 @@ def orchestrate_stacksets(
         # Handle different cloud configurations with proper region targeting
         if "gov" not in falcon_cloud:
             # Commercial cloud - Main stackset deploys to current region only
-            cs_eventbus_name = response["body"]["resources"][0].get(
-                "resource_metadata", {}
-            ).get("eventbus_name", "")
-            # Template expects a full ARN; the API returns only the event bus name
-            if cs_eventbus_name and not cs_eventbus_name.startswith("arn:"):
-                cs_eventbus_arn = (
-                    f"arn:aws:events:{config.aws_region}:{account}:event-bus/{cs_eventbus_name}"
-                )
-            else:
-                cs_eventbus_arn = cs_eventbus_name
+            cs_eventbus_arn = (
+                response["body"]["resources"][0]
+                .get("resource_metadata", {})
+                .get("aws_eventbus_arn", "")
+            )
             base_params.update(
                 {
                     "EventBridgeArn": cs_eventbus_arn,

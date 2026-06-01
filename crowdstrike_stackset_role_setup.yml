@@ -65,6 +65,7 @@ Resources:
                 - iam:UntagRole
                 - iam:TagRole
                 - iam:TagPolicy
+                - iam:UpdateAssumeRolePolicy
                 Resource: '*'
                 Effect: Allow
               - Action:
