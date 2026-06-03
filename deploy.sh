@@ -25,7 +25,6 @@ usage() {
     echo "  --deploy STACK_NAME        Deploy CloudFormation stack after packaging and uploading"
     echo "  --deploy-only STACK_NAME   Deploy CloudFormation stack only (skip packaging)"
     echo "  --params-file FILE         CloudFormation parameters file (JSON/YAML)"
-    echo "  --template-file FILE       CloudFormation template file (default: init_crowdstrike_multiple_cid.yml)"
     echo ""
     echo "ARGUMENTS:"
     echo "  S3_BUCKET                  S3 bucket name for Lambda functions and template"
@@ -70,7 +69,11 @@ package_lambda() {
     # Install requirements
     if [ -f "$lambda_dir/requirements.txt" ]; then
         echo -e "${GREEN}Installing Python dependencies from requirements.txt...${NC}"
-        pip3 install --target "$temp_dir" -r "$lambda_dir/requirements.txt" --quiet
+        if ! pip3 install --target "$temp_dir" -r "$lambda_dir/requirements.txt" --quiet; then
+            echo -e "${RED}Error: pip3 install failed for $lambda_type${NC}"
+            rm -rf "$temp_dir"
+            return 1
+        fi
     fi
 
     # Copy Lambda function
@@ -82,11 +85,9 @@ package_lambda() {
     find "$temp_dir" -name "*.pyo" -delete 2>/dev/null || true
     find "$temp_dir" -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
 
-    # Create zip file
+    # Create zip file (subshell to avoid changing the caller's working directory)
     echo -e "${GREEN}Creating zip file...${NC}"
-    cd "$temp_dir"
-    zip -r "../$output_zip" . -q
-    cd ..
+    (cd "$temp_dir" && zip -r "../$output_zip" . -q)
 
     # Clean up temp directory
     rm -rf "$temp_dir"

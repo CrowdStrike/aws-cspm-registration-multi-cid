@@ -17,16 +17,28 @@ Metadata:
           - FalconClientIdB
           - FalconSecretB
           - FalconCloudB
-      - Label: 
+      - Label:
           default: CSPM Configuration
         Parameters:
+          - EnableAssetInventory
           - EnableIOA
           - EnableIDP
-          - UseExistingCloudTrail
+          - EnableDSPM
+          - EnableVulnerabilityScanning
           - EnableSensorManagement
+          - UseExistingCloudTrail
+          - LogIngestionMethod
+          - RealtimeVisibilityRegions
+          - DSPMRegions
           - APICredentialsStorageMode
           - NestedOUs
           - Regions
+      - Label:
+          default: Advanced Configuration
+        Parameters:
+          - PermissionsBoundary
+          - ResourcePrefix
+          - ResourceSuffix
       - Label: 
           default: StackSet Configuration
         Parameters:
@@ -161,6 +173,54 @@ Parameters:
   Regions:
     Type: String
     Description: List of regions to enable IOA (No Spaces).
+    Default: ''
+  EnableAssetInventory:
+    Type: String
+    Description: Enable Asset Inventory (CSPM)
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Default: 'True'
+  EnableDSPM:
+    Type: String
+    Description: Enable DSPM (Data Security Posture Management)
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Default: 'False'
+  EnableVulnerabilityScanning:
+    Type: String
+    Description: Enable Vulnerability Scanning
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Default: 'False'
+  PermissionsBoundary:
+    Type: String
+    Description: IAM Permission Boundary Policy Name (optional)
+    Default: ''
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for resource names created by cs_aws_root.yaml
+    Default: 'CrowdStrike-'
+  ResourceSuffix:
+    Type: String
+    Description: Suffix for resource names created by cs_aws_root.yaml
+    Default: ''
+  LogIngestionMethod:
+    Type: String
+    Description: Method for ingesting CloudTrail logs - EventBridge or S3
+    AllowedValues:
+      - 'eventbridge'
+      - 's3'
+    Default: 'eventbridge'
+  RealtimeVisibilityRegions:
+    Type: String
+    Description: Comma-separated list of regions for Realtime Visibility (leave empty for all opted-in regions)
+    Default: ''
+  DSPMRegions:
+    Type: String
+    Description: Comma-separated list of regions to enable DSPM/Agentless Scanning (required if EnableDSPM or EnableVulnerabilityScanning is True)
     Default: ''
 
 Resources:
@@ -405,6 +465,15 @@ Resources:
           parent_stack: !Ref AWS::StackName
           identity_protection: !Ref EnableIDP
           nested_ous: !Ref NestedOUs
+          enable_asset_inventory: !Ref EnableAssetInventory
+          enable_dspm: !Ref EnableDSPM
+          enable_vulnerability_scanning: !Ref EnableVulnerabilityScanning
+          permissions_boundary: !Ref PermissionsBoundary
+          resource_prefix: !Ref ResourcePrefix
+          resource_suffix: !Ref ResourceSuffix
+          log_ingestion_method: !Ref LogIngestionMethod
+          realtime_visibility_regions: !Ref RealtimeVisibilityRegions
+          dspm_regions: !Ref DSPMRegions
       Handler: lambda_function.lambda_handler
       MemorySize: 128
       Role: !GetAtt "LambdaCrowdStrikeRegistrationRole.Arn"
