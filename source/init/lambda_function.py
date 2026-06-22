@@ -8,6 +8,7 @@ import os
 import sys
 import base64
 import datetime
+import time
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import boto3
@@ -64,6 +65,7 @@ class LambdaConfig:
     log_ingestion_method: str
     realtime_visibility_regions: str
     dspm_regions: str
+    role_stackset_name: str
 
     @classmethod
     def from_environment(cls) -> "LambdaConfig":
@@ -121,6 +123,9 @@ class LambdaConfig:
                     "realtime_visibility_regions", ""
                 ),
                 dspm_regions=os.environ.get("dspm_regions", ""),
+                role_stackset_name=os.environ.get(
+                    "role_stackset_name", "crowdstrike-stackset-role-setup"
+                ),
             )
         except (ValueError, KeyError) as e:
             logger.error(f"Configuration error: {e}")
@@ -327,6 +332,13 @@ class StackSetManager:
             # Add template_url tag to parent tags
             stackset_tags = parent_tags + [template_url_tag]
 
+        _MAX_RETRIES = 3
+        _RETRY_WAIT = 30  # seconds — fallback only, proactive wait should prevent retries
+        _EXEC_ROLE_ERROR = "AWSCloudFormationStackSetExecutionRole"
+        # Keep operation timeouts short: Lambda hard ceiling is 900s.
+        # Proactive wait (5min) + create poll (3min) + one fallback delete+retry (7min) ≈ 15min.
+        _OPERATION_TIMEOUT = 180  # seconds per poll
+
         try:
             client = self.client_manager.get_client("cloudformation")
 
@@ -344,19 +356,59 @@ class StackSetManager:
                 Tags=stackset_tags,
             )
 
-            # Create StackSet instances in appropriate regions
-            client.create_stack_instances(
-                StackSetName=stackset_name,
-                Accounts=[account],
-                Regions=deployment_regions,
-                OperationPreferences={
-                    "FailureTolerancePercentage": 100,
-                    "MaxConcurrentPercentage": 100,
-                    "ConcurrencyMode": "SOFT_FAILURE_TOLERANCE",
-                },
-                OperationId=f"{account}-{timestamp}{stackset_suffix}",
-                CallAs="SELF",
-            )
+            # Wait for the service-managed role StackSet to finish deploying the
+            # execution role into the target account before creating instances.
+            # Without this, create_stack_instances succeeds at the API level but
+            # the resulting operation fails with an execution-role trust error.
+            if self.config.role_stackset_name:
+                self._wait_for_role_stackset_instance(
+                    client,
+                    self.config.role_stackset_name,
+                    account,
+                    timeout=300,
+                )
+
+            # Create StackSet instances.  Keep a retry loop as a safety net in case
+            # the role propagated between the poll and the instance creation.
+            for attempt in range(1, _MAX_RETRIES + 1):
+                timestamp = self._get_timestamp()
+                operation_id = f"{account}-{timestamp}{stackset_suffix}"
+
+                client.create_stack_instances(
+                    StackSetName=stackset_name,
+                    Accounts=[account],
+                    Regions=deployment_regions,
+                    OperationPreferences={
+                        "FailureTolerancePercentage": 100,
+                        "MaxConcurrentPercentage": 100,
+                        "ConcurrencyMode": "SOFT_FAILURE_TOLERANCE",
+                    },
+                    OperationId=operation_id,
+                    CallAs="SELF",
+                )
+
+                op_status, op_reason = self._wait_for_stackset_operation(
+                    client, stackset_name, operation_id, timeout=_OPERATION_TIMEOUT
+                )
+
+                if op_status == "SUCCEEDED":
+                    break
+
+                if _EXEC_ROLE_ERROR in op_reason and attempt < _MAX_RETRIES:
+                    logger.warning(
+                        f"Stack instance creation attempt {attempt}/{_MAX_RETRIES} failed: "
+                        f"execution role not yet propagated ({op_reason}). "
+                        f"Deleting failed instances and retrying in {_RETRY_WAIT}s..."
+                    )
+                    self._delete_stack_instances(
+                        client, stackset_name, account, deployment_regions, timestamp, stackset_suffix
+                    )
+                    time.sleep(_RETRY_WAIT)
+                else:
+                    logger.error(
+                        f"Stack instance creation failed (status={op_status}): {op_reason}"
+                    )
+                    return False
 
             logger.info(
                 f"Successfully created StackSet {stackset_name} in regions: {deployment_regions}"
@@ -375,6 +427,141 @@ class StackSetManager:
         except Exception as e:
             logger.error(f"Unexpected error creating StackSet {stackset_name}: {e}")
             return False
+
+    def _wait_for_role_stackset_instance(
+        self,
+        client,
+        role_stackset_name: str,
+        account: str,
+        poll_interval: int = 15,
+        timeout: int = 300,
+    ) -> bool:
+        """Wait until the role StackSet has a CURRENT instance in the target account.
+
+        The service-managed StackSet deploys an IAM execution role (account-global),
+        so we only need to confirm one CURRENT instance exists for the account,
+        regardless of region.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                resp = client.list_stack_instances(
+                    StackSetName=role_stackset_name,
+                    StackInstanceAccount=account,
+                )
+                instances = resp.get("Summaries", [])
+
+                if any(i.get("Status") == "CURRENT" for i in instances):
+                    logger.info(
+                        f"Role StackSet '{role_stackset_name}' instance is CURRENT "
+                        f"in account {account} — proceeding"
+                    )
+                    return True
+
+                statuses = [i.get("Status") for i in instances] if instances else ["not found"]
+                logger.info(
+                    f"Waiting for role StackSet '{role_stackset_name}' in account "
+                    f"{account} (current statuses: {statuses})..."
+                )
+
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                if error_code == "StackSetNotFoundException":
+                    # StackSet doesn't exist yet — keep waiting
+                    logger.info(
+                        f"Role StackSet '{role_stackset_name}' not found yet, waiting..."
+                    )
+                else:
+                    logger.warning(f"Unexpected error checking role StackSet: {e}")
+
+            time.sleep(poll_interval)
+
+        logger.warning(
+            f"Timed out waiting for role StackSet '{role_stackset_name}' in account "
+            f"{account} — proceeding anyway"
+        )
+        return False
+
+    def _wait_for_stackset_operation(
+        self,
+        client,
+        stackset_name: str,
+        operation_id: str,
+        poll_interval: int = 10,
+        timeout: int = 600,
+    ) -> Tuple[str, str]:
+        """Poll a StackSet operation until it reaches a terminal state.
+
+        Returns (status, status_reason).  status_reason is sourced from the
+        per-instance results when the top-level field is empty (which is common
+        for FAILED operations caused by execution-role issues).
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            resp = client.describe_stack_set_operation(
+                StackSetName=stackset_name,
+                OperationId=operation_id,
+                CallAs="SELF",
+            )
+            op = resp["StackSetOperation"]
+            status = op["Status"]
+
+            if status not in ("RUNNING", "STOPPING", "QUEUED"):
+                reason = op.get("StatusReason", "")
+
+                # For FAILED operations the useful message is usually in the
+                # per-instance results, not on the operation itself.
+                if status == "FAILED" and not reason:
+                    try:
+                        results = client.list_stack_set_operation_results(
+                            StackSetName=stackset_name,
+                            OperationId=operation_id,
+                            CallAs="SELF",
+                        )
+                        reasons = [
+                            r.get("StatusReason", "")
+                            for r in results.get("Summaries", [])
+                            if r.get("Status") == "FAILED"
+                        ]
+                        reason = "; ".join(r for r in reasons if r)
+                    except Exception as e:
+                        logger.warning(f"Could not fetch operation results: {e}")
+
+                return status, reason
+
+            time.sleep(poll_interval)
+
+        return "TIMEOUT", ""
+
+    def _delete_stack_instances(
+        self,
+        client,
+        stackset_name: str,
+        account: str,
+        regions: List[str],
+        timestamp: str,
+        stackset_suffix: str,
+    ) -> None:
+        """Delete stack instances and wait for the operation to finish."""
+        try:
+            resp = client.delete_stack_instances(
+                StackSetName=stackset_name,
+                Accounts=[account],
+                Regions=regions,
+                RetainStacks=False,
+                OperationId=f"{account}-del-{timestamp}{stackset_suffix}",
+                CallAs="SELF",
+            )
+            del_op_id = resp["OperationId"]
+            status, reason = self._wait_for_stackset_operation(
+                client, stackset_name, del_op_id, timeout=180
+            )
+            if status != "SUCCEEDED":
+                logger.warning(
+                    f"Cleanup delete operation ended with status={status}: {reason}"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to delete stack instances for retry cleanup: {e}")
 
 
 class RegionManager:

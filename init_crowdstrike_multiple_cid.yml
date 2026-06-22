@@ -172,7 +172,7 @@ Parameters:
     Default: ''
   Regions:
     Type: String
-    Description: List of regions to enable IOA (No Spaces).
+    Description: (Commercial-to-GovCloud only) Regions for EB/IOA StackSets.
     Default: ''
   EnableAssetInventory:
     Type: String
