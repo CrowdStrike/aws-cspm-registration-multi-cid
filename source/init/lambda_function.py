@@ -669,6 +669,23 @@ class OrganizationManager:
         logger.info(f"OU {parent_id} direct accounts: {len(accounts)}")
         return accounts
 
+    def get_parent_id(self, ou_id: str) -> Optional[str]:
+        """Return the parent ID of an OU/root, or None if it has no parent (is the root)."""
+        try:
+            client = self.client_manager.get_client("organizations")
+            resp = client.list_parents(ChildId=ou_id)
+            parents = resp.get("Parents", [])
+            if not parents:
+                return None
+            parent = parents[0]
+            # Root nodes have type "ROOT" — stop traversal there
+            if parent.get("Type") == "ROOT":
+                return None
+            return parent["Id"]
+        except ClientError as e:
+            logger.error(f"Failed to get parent of {ou_id}: {e}")
+            return None
+
     def _get_accounts_recursive(
         self, client, parent_id: str, depth: int = 0
     ) -> List[str]:
@@ -752,31 +769,64 @@ def is_move_account_event(event: Dict[str, Any]) -> bool:
 
 
 def find_secret_for_ou(
-    target_ou: str, config: LambdaConfig, secret_manager: SecretManager
+    target_ou: str,
+    config: LambdaConfig,
+    secret_manager: SecretManager,
+    org_manager: Optional["OrganizationManager"] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Find which secret contains the target OU in its OUs list"""
+    """Find which secret covers the target OU.
+
+    Checks the target OU and, if not found, walks up the Organizations parent
+    hierarchy until a configured OU ancestor is matched or the root is reached.
+    This handles accounts moved into child OUs of configured OUs.
+    """
     try:
         secrets = [s.strip() for s in config.secret_list.split(",") if s.strip()]
 
+        # Build a lookup: configured_ou -> credentials so we can check ancestry
+        ou_to_credentials: Dict[str, Dict[str, Any]] = {}
         for secret_name in secrets:
             try:
                 credentials = secret_manager.get_secret(secret_name, config.aws_region)
-
                 if "OUs" in credentials:
-                    ou_list = credentials["OUs"]
-                    ous = [ou.strip() for ou in ou_list.split(",") if ou.strip()]
-
-                    if target_ou in ous:
-                        logger.info(
-                            f"Found matching secret {secret_name} for OU {target_ou}"
-                        )
-                        return credentials
-
+                    for ou in [o.strip() for o in credentials["OUs"].split(",") if o.strip()]:
+                        ou_to_credentials[ou] = credentials
             except Exception as e:
                 logger.error(f"Failed to check secret {secret_name}: {e}")
                 continue
 
-        logger.warning(f"No secret found containing OU {target_ou}")
+        if not ou_to_credentials:
+            logger.warning("No secrets with OUs configuration found")
+            return None
+
+        # Walk from target_ou up to (but not including) the root
+        current = target_ou
+        depth = 0
+        max_depth = 20  # guard against cycles / extremely deep hierarchies
+
+        while current and depth < max_depth:
+            if current in ou_to_credentials:
+                if current == target_ou:
+                    logger.info(f"Found matching secret for OU {target_ou}")
+                else:
+                    logger.info(
+                        f"OU {target_ou} is a child of configured OU {current} — "
+                        f"using its credentials"
+                    )
+                return ou_to_credentials[current]
+
+            if org_manager is None:
+                break
+
+            parent = org_manager.get_parent_id(current)
+            if parent is None:
+                break
+            current = parent
+            depth += 1
+
+        logger.warning(
+            f"No secret found for OU {target_ou} or any of its ancestor OUs"
+        )
         return None
 
     except Exception as e:
@@ -790,6 +840,7 @@ def process_move_account_event(
     secret_manager: SecretManager,
     registrar: CrowdStrikeRegistrar,
     stackset_manager: StackSetManager,
+    org_manager: OrganizationManager,
     my_regions: List[str],
     comm_gov_eb_regions: List[str],
 ) -> Tuple[int, int]:
@@ -801,8 +852,10 @@ def process_move_account_event(
 
         logger.info(f"Processing MoveAccount event: account {account} moved to OU {ou}")
 
-        # Find the appropriate secret for this OU
-        credentials = find_secret_for_ou(ou, config, secret_manager)
+        # Find the appropriate secret for this OU (or any ancestor OU if nested_ous enabled)
+        credentials = find_secret_for_ou(
+            ou, config, secret_manager, org_manager if config.nested_ous else None
+        )
 
         if not credentials:
             logger.error(
@@ -880,6 +933,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 secret_manager,
                 registrar,
                 stackset_manager,
+                org_manager,
                 my_regions,
                 comm_gov_eb_regions,
             )
