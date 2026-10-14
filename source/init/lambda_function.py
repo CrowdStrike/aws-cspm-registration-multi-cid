@@ -419,8 +419,12 @@ class StackSetManager:
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"].get("Message", "")
             if error_code == "NameAlreadyExistsException":
-                logger.warning(f"StackSet {stackset_name} already exists")
-                return True
+                logger.warning(
+                    f"StackSet {stackset_name} already exists — checking instance health"
+                )
+                return self._reconcile_existing_stackset(
+                    account, stackset_name, deployment_regions
+                )
             else:
                 logger.error(f"Failed to create StackSet {stackset_name}: {error_code} - {error_message}")
                 return False
@@ -481,6 +485,125 @@ class StackSetManager:
             f"{account} — proceeding anyway"
         )
         return False
+
+    def _reconcile_existing_stackset(
+        self,
+        account: str,
+        stackset_name: str,
+        deployment_regions: List[str],
+    ) -> bool:
+        """Reconcile a StackSet that already exists but may have missing or failed instances.
+
+        Called when create_stack_set raises NameAlreadyExistsException.  The StackSet
+        shell can exist while its instances are FAILED or absent — e.g. if a previous
+        Lambda invocation hit the execution-role race and exhausted retries before the
+        role was ready.  This method creates or updates any instance not in a healthy state.
+        """
+        client = self.client_manager.get_client("cloudformation")
+        _OPERATION_TIMEOUT = 180
+
+        try:
+            resp = client.list_stack_instances(
+                StackSetName=stackset_name,
+                StackInstanceAccount=account,
+                CallAs="SELF",
+            )
+            instances = resp.get("Summaries", [])
+        except ClientError as e:
+            logger.error(f"Could not list instances for {stackset_name}: {e}")
+            return False
+
+        # Build a set of regions that already have a healthy instance.
+        healthy_regions = {
+            i["Region"]
+            for i in instances
+            if i.get("Status") in ("CURRENT", "RUNNING")
+        }
+
+        # Regions with an explicitly failed/outdated instance need update_stack_instances.
+        needs_update = [
+            i["Region"]
+            for i in instances
+            if i.get("Status") in ("FAILED", "OUTDATED", "INOPERABLE")
+        ]
+
+        # Regions with no instance at all need create_stack_instances.
+        needs_create = [r for r in deployment_regions if r not in healthy_regions and r not in needs_update]
+
+        if not needs_update and not needs_create:
+            logger.info(
+                f"StackSet {stackset_name} already has healthy instances in all "
+                f"target regions — no reconciliation needed"
+            )
+            return True
+
+        logger.warning(
+            f"StackSet {stackset_name} has unhealthy instances — reconciling. "
+            f"needs_create={needs_create}, needs_update={needs_update}"
+        )
+
+        timestamp = self._get_timestamp()
+        op_prefs = {
+            "FailureTolerancePercentage": 100,
+            "MaxConcurrentPercentage": 100,
+            "ConcurrencyMode": "SOFT_FAILURE_TOLERANCE",
+        }
+
+        success = True
+
+        if needs_create:
+            operation_id = f"{account}-{timestamp}-rc"
+            try:
+                client.create_stack_instances(
+                    StackSetName=stackset_name,
+                    Accounts=[account],
+                    Regions=needs_create,
+                    OperationPreferences=op_prefs,
+                    OperationId=operation_id,
+                    CallAs="SELF",
+                )
+                op_status, op_reason = self._wait_for_stackset_operation(
+                    client, stackset_name, operation_id, timeout=_OPERATION_TIMEOUT
+                )
+                if op_status != "SUCCEEDED":
+                    logger.error(
+                        f"Reconciliation create_stack_instances failed for {stackset_name} "
+                        f"(status={op_status}): {op_reason}"
+                    )
+                    success = False
+                else:
+                    logger.info(f"Reconciliation created instances in {needs_create} for {stackset_name}")
+            except ClientError as e:
+                logger.error(f"Reconciliation create_stack_instances error for {stackset_name}: {e}")
+                success = False
+
+        if needs_update:
+            operation_id = f"{account}-{timestamp}-ru"
+            try:
+                client.update_stack_instances(
+                    StackSetName=stackset_name,
+                    Accounts=[account],
+                    Regions=needs_update,
+                    OperationPreferences=op_prefs,
+                    OperationId=operation_id,
+                    CallAs="SELF",
+                )
+                op_status, op_reason = self._wait_for_stackset_operation(
+                    client, stackset_name, operation_id, timeout=_OPERATION_TIMEOUT
+                )
+                if op_status != "SUCCEEDED":
+                    logger.error(
+                        f"Reconciliation update_stack_instances failed for {stackset_name} "
+                        f"(status={op_status}): {op_reason}"
+                    )
+                    success = False
+                else:
+                    logger.info(f"Reconciliation updated instances in {needs_update} for {stackset_name}")
+            except ClientError as e:
+                logger.error(f"Reconciliation update_stack_instances error for {stackset_name}: {e}")
+                success = False
+
+        return success
 
     def _wait_for_stackset_operation(
         self,
