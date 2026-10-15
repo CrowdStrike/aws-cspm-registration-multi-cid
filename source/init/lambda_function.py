@@ -334,7 +334,15 @@ class StackSetManager:
 
         _MAX_RETRIES = 3
         _RETRY_WAIT = 30  # seconds — fallback only, proactive wait should prevent retries
-        _EXEC_ROLE_ERROR = "AWSCloudFormationStackSetExecutionRole"
+        # Match the default role name AND any custom exec role name, plus stable
+        # substrings that appear in all execution-role trust errors regardless of
+        # the configured role name.
+        _EXEC_ROLE_SIGNALS = {
+            "AWSCloudFormationStackSetExecutionRole",
+            self.config.stackset_exec_role,
+            "trust relationship",
+            "should have",
+        }
         # Keep operation timeouts short: Lambda hard ceiling is 900s.
         # Proactive wait (5min) + create poll (3min) + one fallback delete+retry (7min) ≈ 15min.
         _OPERATION_TIMEOUT = 180  # seconds per poll
@@ -394,7 +402,7 @@ class StackSetManager:
                 if op_status == "SUCCEEDED":
                     break
 
-                if _EXEC_ROLE_ERROR in op_reason and attempt < _MAX_RETRIES:
+                if any(sig in op_reason for sig in _EXEC_ROLE_SIGNALS) and attempt < _MAX_RETRIES:
                     logger.warning(
                         f"Stack instance creation attempt {attempt}/{_MAX_RETRIES} failed: "
                         f"execution role not yet propagated ({op_reason}). "
@@ -502,6 +510,15 @@ class StackSetManager:
         client = self.client_manager.get_client("cloudformation")
         _OPERATION_TIMEOUT = 180
 
+        # Apply the same execution-role readiness gate as the initial create path.
+        if self.config.role_stackset_name:
+            self._wait_for_role_stackset_instance(
+                client,
+                self.config.role_stackset_name,
+                account,
+                timeout=300,
+            )
+
         try:
             resp = client.list_stack_instances(
                 StackSetName=stackset_name,
@@ -513,22 +530,56 @@ class StackSetManager:
             logger.error(f"Could not list instances for {stackset_name}: {e}")
             return False
 
-        # Build a set of regions that already have a healthy instance.
-        healthy_regions = {
-            i["Region"]
-            for i in instances
-            if i.get("Status") in ("CURRENT", "RUNNING")
-        }
+        # Classify regions by Status + DetailedStatus.
+        # Status values: CURRENT | OUTDATED | INOPERABLE
+        # DetailedStatus values (nested under StackInstanceStatus): PENDING | RUNNING |
+        #   SUCCEEDED | FAILED | CANCELLED | INOPERABLE | SKIPPED_SUSPENDED_ACCOUNT
+        healthy_regions: set = set()
+        needs_update: list = []
 
-        # Regions with an explicitly failed/outdated instance need update_stack_instances.
-        needs_update = [
-            i["Region"]
-            for i in instances
-            if i.get("Status") in ("FAILED", "OUTDATED", "INOPERABLE")
-        ]
+        for i in instances:
+            region = i["Region"]
+            status = i.get("Status")
+            detailed = i.get("StackInstanceStatus", {}).get("DetailedStatus", "")
+
+            if detailed == "SKIPPED_SUSPENDED_ACCOUNT":
+                # Account is suspended; no action is possible or useful.
+                logger.info(
+                    f"Skipping suspended account {account} in {region} for {stackset_name}"
+                )
+                continue
+
+            if detailed in ("PENDING", "RUNNING"):
+                # An operation is already in flight for this instance; driving another
+                # would raise OperationInProgressException.
+                logger.info(
+                    f"Instance {stackset_name}/{account}/{region} has an operation in "
+                    f"progress (DetailedStatus={detailed}) — skipping"
+                )
+                healthy_regions.add(region)  # treat as in-progress, not broken
+                continue
+
+            if status == "INOPERABLE":
+                # update_stack_instances rejects INOPERABLE instances; they need a
+                # delete+recreate cycle that risks data loss.  Log for manual follow-up.
+                logger.error(
+                    f"Instance {stackset_name}/{account}/{region} is INOPERABLE "
+                    f"(DetailedStatus={detailed}) — manual intervention required"
+                )
+                healthy_regions.add(region)  # don't attempt to drive it automatically
+                continue
+
+            if status == "CURRENT":
+                healthy_regions.add(region)
+                continue
+
+            # OUTDATED with any non-in-progress DetailedStatus (FAILED, CANCELLED, SUCCEEDED)
+            # needs update_stack_instances to re-drive it.
+            needs_update.append(region)
 
         # Regions with no instance at all need create_stack_instances.
-        needs_create = [r for r in deployment_regions if r not in healthy_regions and r not in needs_update]
+        known_regions = {i["Region"] for i in instances}
+        needs_create = [r for r in deployment_regions if r not in known_regions]
 
         if not needs_update and not needs_create:
             logger.info(
@@ -544,9 +595,8 @@ class StackSetManager:
 
         timestamp = self._get_timestamp()
         op_prefs = {
-            "FailureTolerancePercentage": 100,
-            "MaxConcurrentPercentage": 100,
-            "ConcurrencyMode": "SOFT_FAILURE_TOLERANCE",
+            "FailureToleranceCount": 0,
+            "MaxConcurrentCount": 1,
         }
 
         success = True
@@ -632,23 +682,28 @@ class StackSetManager:
             if status not in ("RUNNING", "STOPPING", "QUEUED"):
                 reason = op.get("StatusReason", "")
 
-                # For FAILED operations the useful message is usually in the
-                # per-instance results, not on the operation itself.
-                if status == "FAILED" and not reason:
-                    try:
-                        results = client.list_stack_set_operation_results(
-                            StackSetName=stackset_name,
-                            OperationId=operation_id,
-                            CallAs="SELF",
-                        )
-                        reasons = [
-                            r.get("StatusReason", "")
-                            for r in results.get("Summaries", [])
-                            if r.get("Status") == "FAILED"
+                # Always check per-instance results: with SOFT_FAILURE_TOLERANCE the
+                # operation status is SUCCEEDED even when individual instances fail, so
+                # the operation-level status alone is not a reliable success signal.
+                try:
+                    results = client.list_stack_set_operation_results(
+                        StackSetName=stackset_name,
+                        OperationId=operation_id,
+                        CallAs="SELF",
+                    )
+                    failed_summaries = [
+                        r for r in results.get("Summaries", [])
+                        if r.get("Status") != "SUCCEEDED"
+                    ]
+                    if failed_summaries:
+                        instance_reasons = [
+                            r.get("StatusReason", "") for r in failed_summaries if r.get("StatusReason")
                         ]
-                        reason = "; ".join(r for r in reasons if r)
-                    except Exception as e:
-                        logger.warning(f"Could not fetch operation results: {e}")
+                        reason = "; ".join(instance_reasons) or reason
+                        # Treat as FAILED so callers see an accurate signal.
+                        status = "FAILED"
+                except Exception as e:
+                    logger.warning(f"Could not fetch operation results: {e}")
 
                 return status, reason
 
