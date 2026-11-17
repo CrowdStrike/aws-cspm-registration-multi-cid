@@ -1,8 +1,10 @@
 """Force Update for Multiple CID CSPM StackSets"""
 
+import ipaddress
 import logging
 import os
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import boto3
 from botocore.exceptions import ClientError, BotoCoreError
@@ -12,6 +14,54 @@ logger.setLevel(logging.INFO)
 
 ADMIN_ROLE_ARN = os.environ["admin_role_arn"]
 EXEC_ROLE_NAME = os.environ["exec_role_arn"]
+
+# Private/link-local IP ranges that must never be fetched as template URLs
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+]
+
+
+def validate_template_url(url: str) -> bool:
+    """Validate that a template URL is a well-formed HTTPS S3 URL and not a private/link-local address.
+
+    Accepts:
+      - CrowdStrike S3 bucket URLs (cs-prod-cloudconnect-templates.s3*.amazonaws.com)
+      - Customer S3 bucket URLs (*.s3.amazonaws.com, s3.*.amazonaws.com, *.s3-*.amazonaws.com)
+    Rejects:
+      - Non-HTTPS schemes
+      - Non-S3 / non-amazonaws.com hosts
+      - Private, link-local, and loopback IP addresses
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    if parsed.scheme != "https":
+        return False
+
+    host = parsed.hostname
+    if not host:
+        return False
+
+    # Block raw IP addresses in private/link-local ranges
+    try:
+        ip = ipaddress.ip_address(host)
+        for net in _BLOCKED_NETWORKS:
+            if ip in net:
+                return False
+    except ValueError:
+        pass  # hostname, not an IP — continue with domain checks
+
+    # Allow S3 endpoints (covers both path-style and virtual-hosted-style)
+    if host.endswith(".amazonaws.com") or host.endswith(".amazonaws.com.cn"):
+        return True
+
+    return False
 
 
 def get_stacksets_created_by_init() -> List[Tuple[str, str]]:
@@ -89,7 +139,14 @@ def get_template_url_from_stackset(client, stackset_name: str) -> Optional[str]:
 
         for tag in tags:
             if tag.get("Key") == "template_url":
-                return tag.get("Value")
+                url = tag.get("Value")
+                if url and validate_template_url(url):
+                    return url
+                logger.error(
+                    f"Rejected template_url for {stackset_name}: "
+                    f"URL failed validation — must be HTTPS on an amazonaws.com S3 endpoint"
+                )
+                return None
 
         return None
     except (ClientError, BotoCoreError) as error:

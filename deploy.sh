@@ -255,38 +255,41 @@ deploy_cloudformation() {
     fi
     echo ""
     
-    # Build CloudFormation command
-    local cf_cmd="aws cloudformation deploy"
-    cf_cmd+=" --template-file $template_file"
-    cf_cmd+=" --stack-name $stack_name"
-    cf_cmd+=" --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM"
-    
-    # Build parameter overrides
-    local all_param_overrides="S3Bucket=$s3_bucket"
-    
+    # Build CloudFormation command as an array to avoid eval and shell injection
+    local -a cf_cmd=(
+        aws cloudformation deploy
+        --template-file "$template_file"
+        --stack-name "$stack_name"
+        --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM
+    )
+
+    # Build parameter overrides array
+    local -a param_overrides=("S3Bucket=$s3_bucket")
+
     # Add parameters from file if provided
     if [ -n "$params_file" ] && [ -f "$params_file" ]; then
         echo -e "${GREEN}Parsing parameters file: $params_file${NC}"
-        local file_params=$(parse_parameter_file "$params_file")
+        local file_params
+        file_params=$(parse_parameter_file "$params_file")
         if [ -n "$file_params" ]; then
-            # Add file parameters, with S3Bucket override taking precedence
-            all_param_overrides="$file_params $all_param_overrides"
+            # Split newline/space-separated Key=Value pairs into array elements
+            while IFS= read -r param; do
+                [ -n "$param" ] && param_overrides=("$param" "${param_overrides[@]}")
+            done <<< "$file_params"
             echo -e "${GREEN}Loaded parameters from file${NC}"
         else
             echo -e "${YELLOW}Warning: Could not parse parameters from file${NC}"
         fi
         echo ""
     fi
-    
-    # Add all parameter overrides
-    cf_cmd+=" --parameter-overrides $all_param_overrides"
-    
+
+    cf_cmd+=(--parameter-overrides "${param_overrides[@]}")
+
     echo -e "${GREEN}Executing CloudFormation deployment...${NC}"
-    #echo "Command: $cf_cmd"
     echo ""
-    
+
     # Execute deployment
-    if eval $cf_cmd; then
+    if "${cf_cmd[@]}"; then
         echo ""
         echo -e "${GREEN}✅ CloudFormation stack deployed successfully!${NC}"
         echo "Stack Name: $stack_name"
