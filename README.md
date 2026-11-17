@@ -47,7 +47,7 @@ To easily onboard accounts within a single AWS Organization to multiple Falcon C
 6. Run the `deploy.sh` script to package, upload and deploy using your parameter file
 
 ```bash
-./deploy.sh your-s3-bucket-name --deploy your-stack-name --params-file my-params.json
+./deploy.sh your-s3-bucket-name --deploy your-stack-name --params-file my-params.json --lambda-version 2.0.3
 ```
 
 ### Option 2: Manual Deployment (required for resource tags)
@@ -60,7 +60,7 @@ If you prefer manual deployment, follow these steps:
 # This will not upload to S3 or deploy CloudFormation
 ./deploy.sh
 ```
-2. Upload `init_lambda_function.zip` and `update_lambda_function.zip` to the root of an S3 Bucket
+2. Upload `init_lambda_function-<version>.zip` and `update_lambda_function-<version>.zip` to the root of an S3 Bucket
 3. In the CloudFormation console select create stack.
 4. Choose Specify Template and upload `init_crowdstrike_multiple_cid.yml`
 5. Fill out the parameters, click next.

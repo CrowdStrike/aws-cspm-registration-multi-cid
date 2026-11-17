@@ -148,6 +148,10 @@ Parameters:
   S3Bucket:
     Type: String
     Default: ''
+  LambdaVersion:
+    Type: String
+    Description: Version string appended to Lambda zip file names (e.g. 2.0.3). Changing this value forces CloudFormation to update the Lambda function code.
+    Default: 'latest'
   AWSAccountType:
     Type: String
     AllowedValues:
@@ -482,7 +486,7 @@ Resources:
       FunctionName: crowdstrike-multi-cid-registration
       Code:
         S3Bucket: !Ref S3Bucket
-        S3Key: init_lambda_function.zip
+        S3Key: !Sub "init_lambda_function-${LambdaVersion}.zip"
 
   UpdateStackSetsLambda:
     Type: AWS::Lambda::Function
@@ -502,7 +506,7 @@ Resources:
       FunctionName: crowdstrike-multi-cid-update-stacksets
       Code:
         S3Bucket: !Ref S3Bucket
-        S3Key: update_lambda_function.zip
+        S3Key: !Sub "update_lambda_function-${LambdaVersion}.zip"
 
   # Trigger Lambda Function
   # TriggerRegisterAccountsLambda:
