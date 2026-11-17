@@ -1293,14 +1293,13 @@ def orchestrate_stacksets(
         # Use intermediate_role_arn directly from registration response
         cs_role_arn = metadata["intermediate_role_arn"]
 
-        # Common parameters - aligned with cs_aws_root.yaml v7.2
+        # Common parameters - aligned with cs_aws_root.yaml
         base_params = {
             "RoleName": iam_role_name,
             "ExternalID": external_id,
             "CSRoleArn": cs_role_arn,
             "FalconClientID": credentials["FalconClientId"],
             "FalconClientSecret": credentials["FalconSecret"],
-            "UseExistingCloudTrail": str(config.existing_cloudtrail).lower(),
             "Enable1ClickSensorManagement": str(config.sensor_management).lower(),
             "EnableAssetInventory": str(config.enable_asset_inventory).lower(),
             "EnableDSPM": str(config.enable_dspm).lower(),
@@ -1318,15 +1317,14 @@ def orchestrate_stacksets(
         base_params["RealtimeVisibilityRegions"] = config.realtime_visibility_regions
         base_params["DSPMRegions"] = config.dspm_regions
 
-        # Add cloud trail bucket if not using existing
-        if not config.existing_cloudtrail:
+        # When LogIngestionMethod=s3 pass the bucket name from the registration response.
+        # UseExistingCloudTrail and CSBucketName were removed from cs_aws_root.yaml;
+        # LogIngestionS3BucketName is their replacement.
+        if config.log_ingestion_method == "s3":
             cs_bucket_name = response["body"]["resources"][0].get(
                 "resource_metadata", {}
-            ).get("aws_cloudtrail_bucket_name", "none")
-        else:
-            cs_bucket_name = "none"
-
-        base_params["CSBucketName"] = cs_bucket_name
+            ).get("aws_cloudtrail_bucket_name", "")
+            base_params["LogIngestionS3BucketName"] = cs_bucket_name
 
         # Handle different cloud configurations with proper region targeting
         if "gov" not in falcon_cloud:
