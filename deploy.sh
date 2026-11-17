@@ -25,6 +25,7 @@ usage() {
     echo "  --deploy STACK_NAME        Deploy CloudFormation stack after packaging and uploading"
     echo "  --deploy-only STACK_NAME   Deploy CloudFormation stack only (skip packaging)"
     echo "  --params-file FILE         CloudFormation parameters file (JSON/YAML)"
+    echo "  --lambda-version VERSION   Version string appended to zip names and passed as LambdaVersion parameter (default: latest)"
     echo ""
     echo "ARGUMENTS:"
     echo "  S3_BUCKET                  S3 bucket name for Lambda functions and template"
@@ -42,9 +43,10 @@ usage() {
 # Function to package a single Lambda function
 package_lambda() {
     local lambda_type="$1"
+    local lambda_version="${2:-latest}"
     local lambda_dir="source/$lambda_type"
     local lambda_file="lambda_function.py"
-    local output_zip="${lambda_type//-/_}_lambda_function.zip"
+    local output_zip="${lambda_type//-/_}_lambda_function-${lambda_version}.zip"
     local temp_dir="lambda_package_temp_$lambda_type"
 
     echo -e "${GREEN}=== Packaging $lambda_type Lambda Function ===${NC}"
@@ -315,6 +317,7 @@ parse_arguments() {
     ARG_STACK_NAME=""
     ARG_TEMPLATE_FILE="init_crowdstrike_multiple_cid.yml"
     ARG_PARAMS_FILE=""
+    ARG_LAMBDA_VERSION="latest"
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -331,6 +334,10 @@ parse_arguments() {
                 ;;
             --params-file)
                 ARG_PARAMS_FILE="$2"
+                shift 2
+                ;;
+            --lambda-version)
+                ARG_LAMBDA_VERSION="$2"
                 shift 2
                 ;;
             --template-file)
@@ -407,7 +414,7 @@ execute_packaging() {
     local total_count=${#functions[@]}
     
     for func in "${functions[@]}"; do
-        if package_lambda "$func"; then
+        if package_lambda "$func" "$ARG_LAMBDA_VERSION"; then
             ((success_count++))
         fi
         echo "----------------------------------------"

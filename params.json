@@ -1,5 +1,10 @@
 [
   {
+    "ParameterKey": "LambdaVersion",
+    "ParameterValue": "latest",
+    "_comment": "REQUIRED: Version string appended to Lambda zip names (e.g. 2.0.3). Must match the version passed to deploy.sh --lambda-version. Changing this value triggers a CloudFormation-managed Lambda code update."
+  },
+  {
     "ParameterKey": "StackSetAdminRole",
     "ParameterValue": "CrowdStrikeStackSetAdministrationRole",
     "_comment": "Administration Role for CrowdStrike Root EB StackSet"
